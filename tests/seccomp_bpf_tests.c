@@ -766,6 +766,9 @@ TEST_F(TRACE, getpid_runs_normally) {
  * - add microbenchmarks
  * - expand NNP testing
  * - add arch-specific TRACE and TRAP handlers.
+ * - endianness checking when appropriate
+ * - 64-bit arg prodding
+ * - arch value testing (x86 modes especially)
  * - ...
  */
 
