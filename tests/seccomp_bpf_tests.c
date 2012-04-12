@@ -6,9 +6,11 @@
  * Test code for seccomp bpf.
  */
 
-#include "test_harness.h"
+#include <asm/siginfo.h>
+#define __have_siginfo_t 1
+#define __have_sigval_t 1
+#define __have_sigevent_t 1
 
-/* #include <asm/siginfo.h> */
 #include <errno.h>
 #include <linux/filter.h>
 #include <linux/prctl.h>
@@ -19,9 +21,11 @@
 #include <string.h>
 #include <syscall.h>
 
+#include "test_harness.h"
+
 #ifndef PR_SET_NO_NEW_PRIVS
-#define PR_SET_NO_NEW_PRIVS 36
-#define PR_GET_NO_NEW_PRIVS 37
+#define PR_SET_NO_NEW_PRIVS 38
+#define PR_GET_NO_NEW_PRIVS 39
 #endif
 
 #define syscall_arg(_n) (offsetof(struct seccomp_data, args[_n]))
@@ -425,18 +429,20 @@ TEST_F(TRAP, handler) {
 	/* Expect the registers to be rolled back. (nr = error) may vary based on arch */
 	ret = syscall(__NR_getpid);
 	EXPECT_EQ(SIGSYS, TRAP_nr);
-#ifndef si_syscall
-#ifndef si_trapno
-	/* Rely on syscall_rollback to confirm the syscall #. */
-	EXPECT_EQ(__NR_getpid, ret) {
-		TH_LOG("Flaky test used as si_syscall isn't available.");
-	}
+	struct local_sigsys {
+			void __user *_call_addr; /* calling user insn */
+			int _syscall;	/* triggering system call number */
+			unsigned int _arch;	/* AUDIT_ARCH_* of syscall */
+	} *sigsys = (struct local_sigsys *)
+#ifdef si_syscall
+		&(TRAP_info.si_call_addr);
 #else
-	EXPECT_EQ(__NR_getpid, TRAP_info.si_trapno);
+		&TRAP_info.si_pid;
 #endif
-#else
-	EXPECT_EQ(__NR_getpid, TRAP_info.si_syscall);
-#endif
+	EXPECT_EQ(__NR_getpid, sigsys->_syscall);
+	/* Make sure arch is non-zero. */
+	EXPECT_NE(0, sigsys->_arch);
+	EXPECT_NE(0, (unsigned long)sigsys->_call_addr);
 }
 
 FIXTURE_DATA(precedence) {
@@ -673,7 +679,10 @@ void tracer(struct __test_metadata *_metadata, pid_t tracee, unsigned long poke_
 			return;
 		ret = ptrace(PTRACE_GETEVENTMSG, tracee, NULL, &msg);
 		EXPECT_EQ(0, ret);
-		EXPECT_EQ(0x1001, msg);
+		/* If this fails, don't try to recover. */
+		ASSERT_EQ(0x1001, msg) {
+			kill(tracee, SIGKILL);
+		}
 		/*
 		 * Poke in the message.
 		 * Registers are not touched to try to keep this relatively arch
