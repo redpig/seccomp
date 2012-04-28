@@ -440,9 +440,15 @@ static int test_harness_run(int __attribute__((unused)) argc,
     } else {
       /* TODO(wad) add timeout support. */
       waitpid(child_pid, &status, 0);
-      if (WIFEXITED(status))
+      if (WIFEXITED(status)) {
         t->passed = t->termsig == -1 ? WEXITSTATUS(status) : 0;
-      if (WIFSIGNALED(status)) {
+        if (t->termsig != -1) {
+         fprintf(TH_LOG_STREAM,
+                  "%s: Test exited normally instead of by signal (code: %d)\n",
+                 t->name,
+                 WEXITSTATUS(status));
+        }
+      } else if (WIFSIGNALED(status)) {
         t->passed = 0;
         if (WTERMSIG(status) == SIGABRT) {
           fprintf(TH_LOG_STREAM,
@@ -456,6 +462,11 @@ static int test_harness_run(int __attribute__((unused)) argc,
                  t->name,
                  WTERMSIG(status));
         }
+      } else {
+          fprintf(TH_LOG_STREAM,
+                  "%s: Test ended in some other way [%u]\n",
+                 t->name,
+                 status);
       }
     }
     printf("[     %4s ] %s\n", (t->passed ? "OK" : "FAIL"), t->name);

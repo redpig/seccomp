@@ -510,6 +510,7 @@ FIXTURE_TEARDOWN(precedence) {
 TEST_F_SIGNAL(precedence, kill_is_highest, SIGSYS) {
 	int ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
 	pid_t parent = getppid();
+	pid_t res = 0;
 	ASSERT_EQ(0, ret);
 
 	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->allow);
@@ -523,9 +524,11 @@ TEST_F_SIGNAL(precedence, kill_is_highest, SIGSYS) {
 	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->kill);
 	ASSERT_EQ(0, ret);
 	/* Should work just fine. */
-	EXPECT_EQ(parent, syscall(__NR_getppid));
+	res = syscall(__NR_getppid);
+	EXPECT_EQ(parent, res);
 	/* getpid() should never return. */
-	EXPECT_EQ(0, syscall(__NR_getpid));
+	res = syscall(__NR_getpid);
+	EXPECT_EQ(0, res);
 }
 
 TEST_F_SIGNAL(precedence, kill_is_highest_in_any_order, SIGSYS) {
