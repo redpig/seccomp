@@ -60,9 +60,10 @@ FIXTURE_DATA(TRAP) {
 /* XXX: will need one per arch, etc.
  *      thankfully _arch can tell us the calling convention!
  */
+extern void *thunk_ip;	/* label for the instruction _after_ syscall */
 static void syscall_thunk(void)
 {
-	asm("syscall");
+	asm("syscall; thunk_ip:");
 }
 
 #if 0
@@ -75,7 +76,7 @@ static void compat_thunk(void)
 
 FIXTURE_SETUP(TRAP) {
 	/* instruction after the syscall. Will be arch specific, of course. */
-	unsigned long thunk_addr = (unsigned long)syscall_thunk + 6;
+	unsigned long thunk_addr = (unsigned long)&thunk_ip;
 	TH_LOG("Thunk: 0x%lX\n", thunk_addr);
 	{
 		struct sock_filter filter[] = {
