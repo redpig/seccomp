@@ -23,10 +23,12 @@
 
 #include "test_harness.h"
 
-#ifndef PR_SET_NO_NEW_PRIVS
+#ifdef PR_SET_NO_NEW_PRIVS
+#undef PR_SET_NO_NEW_PRIVS
+#undef PR_GET_NO_NEW_PRIVS
+#endif
 #define PR_SET_NO_NEW_PRIVS 38
 #define PR_GET_NO_NEW_PRIVS 39
-#endif
 
 #define syscall_arg(_n) (offsetof(struct seccomp_data, args[_n]))
 
@@ -73,9 +75,10 @@ TEST(mode_filter_support) {
 /* TODO(wad) add a TEST_IF_UID() wrapper */
 TEST(mode_filter_without_nnp) {
 	int expect_errno = EACCES;
-	int ret = prctl(PR_GET_NO_NEW_PRIVS, 0, NULL, 0, 0);
+	errno = 0;
+	int ret = prctl(PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0);
 	ASSERT_LE(0, ret) {
-		TH_LOG("Expected 0 or unsupported for NO_NEW_PRIVS");
+		TH_LOG("Expected 0 or unsupported for NO_NEW_PRIVS: %s", strerror(errno));
 	}
 	/* Succeeds with CAP_SYS_ADMIN, fails without */
 	/* TODO(wad) check caps not euid */
@@ -303,7 +306,7 @@ TEST(ERRNO_one) {
 	struct sock_filter filter[] = {
 		BPF_STMT(BPF_LD+BPF_W+BPF_ABS,
 			offsetof(struct seccomp_data, nr)),
-		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_read, 0, 1),
+		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_time, 0, 1),
 		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ERRNO | E2BIG),
 		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
 	};
@@ -319,7 +322,12 @@ TEST(ERRNO_one) {
 	ASSERT_EQ(0, ret);
 
 	EXPECT_EQ(parent, syscall(__NR_getppid));
-	EXPECT_EQ(-1, read(0, NULL, 0));
+	EXPECT_EQ(-1, syscall(__NR_time, NULL));
+	EXPECT_EQ(E2BIG, errno);
+	if (time(NULL) < 0) {
+		TH_LOG("no userland vdso; don't expect glibc to populate an errno");
+		EXPECT_GT(0, time(NULL));
+	}
 	EXPECT_EQ(E2BIG, errno);
 }
 
@@ -327,7 +335,7 @@ TEST(ERRNO_one_ok) {
 	struct sock_filter filter[] = {
 		BPF_STMT(BPF_LD+BPF_W+BPF_ABS,
 			offsetof(struct seccomp_data, nr)),
-		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_read, 0, 1),
+		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_time, 0, 1),
 		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ERRNO | 0),
 		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
 	};
@@ -344,7 +352,13 @@ TEST(ERRNO_one_ok) {
 
 	EXPECT_EQ(parent, syscall(__NR_getppid));
 	/* "errno" of 0 is ok. */
-	EXPECT_EQ(0, read(0, NULL, 0));
+	if (time(NULL) != 0) { /* then we have a userspace vdso helper */
+		TH_LOG("vdso userland time helper.");
+		EXPECT_EQ(0, syscall(__NR_time, NULL));
+	} else {
+		TH_LOG("NO vdso userland time helper.");
+		EXPECT_EQ(0, time(NULL));
+	}
 }
 
 FIXTURE_DATA(TRAP) {
@@ -356,6 +370,8 @@ FIXTURE_SETUP(TRAP) {
 		BPF_STMT(BPF_LD+BPF_W+BPF_ABS,
 			offsetof(struct seccomp_data, nr)),
 		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_getpid, 0, 1),
+		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_TRAP),
+		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_time, 0, 1),
 		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_TRAP),
 		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
 	};
@@ -377,7 +393,8 @@ TEST_F_SIGNAL(TRAP, dfl, SIGSYS) {
 
 	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->prog);
 	ASSERT_EQ(0, ret);
-	syscall(__NR_getpid);
+	time(NULL);
+	syscall(__NR_time);
 }
 
 /* Ensure that SIGSYS overrides SIG_IGN */
@@ -430,7 +447,7 @@ TEST_F(TRAP, handler) {
 	ret = syscall(__NR_getpid);
 	EXPECT_EQ(SIGSYS, TRAP_nr);
 	struct local_sigsys {
-			void __user *_call_addr; /* calling user insn */
+			void *_call_addr; /* calling user insn */
 			int _syscall;	/* triggering system call number */
 			unsigned int _arch;	/* AUDIT_ARCH_* of syscall */
 	} *sigsys = (struct local_sigsys *)
@@ -711,7 +728,7 @@ FIXTURE_SETUP(TRACE) {
 	struct sock_filter filter[] = {
 		BPF_STMT(BPF_LD+BPF_W+BPF_ABS,
 			offsetof(struct seccomp_data, nr)),
-		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_read, 0, 1),
+		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_time, 0, 1),
 		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_TRACE | 0x1001),
 		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
 	};
@@ -748,16 +765,23 @@ FIXTURE_TEARDOWN(TRACE) {
 		free(self->prog.filter);
 };
 
-TEST_F(TRACE, read_has_side_effects) {
+TEST_F(TRACE, time_has_side_effects) {
 	ssize_t ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+	time_t t;
 	ASSERT_EQ(0, ret);
 
 	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->prog, 0, 0);
 	ASSERT_EQ(0, ret);
 
 	EXPECT_EQ(0, self->poked);
-	ret = read(-1, NULL, 0);
-	EXPECT_EQ(-1, ret);
+	/* Try glibc first in case of vsyscall use. */
+	t = time(NULL);
+	EXPECT_LT(0, t);
+	if (self->poked != 0x1001) {
+		TH_LOG("userland vdso time helper");
+		t = syscall(__NR_time, NULL);
+		EXPECT_LT(0, t);
+	}
 	EXPECT_EQ(0x1001, self->poked);
 }
 

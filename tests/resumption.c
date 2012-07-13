@@ -194,6 +194,7 @@ TEST_F(TRAP, handler) {
 	ASSERT_EQ(0, ret);
 	ret = syscall(__NR_close, 0);
 	ASSERT_EQ(-1, ret);
+	ASSERT_LT(0, time(NULL));
 }
 
 TEST_HARNESS_MAIN
