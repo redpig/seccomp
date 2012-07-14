@@ -66,6 +66,15 @@ static void syscall_thunk(void)
 	asm("syscall; thunk_ip:");
 }
 
+static time_t vsyscall_time(time_t *p)
+{
+	register time_t t asm ("rax");
+	register time_t *p1 asm ("rdi") = p;
+	__asm__("call 0xffffffffff600400 \n");
+	return t;
+}
+
+
 #if 0
 /* For instance, we could jump here instead. */
 static void compat_thunk(void)
@@ -126,6 +135,7 @@ static void TRAP_action(int nr, siginfo_t *info, void *void_context)
 	ucontext_t *ctx = (ucontext_t *)void_context;
 	char buf[256];
 	int len;
+	int do_ret = 1;
 	struct arch_sigsys *sys = (struct arch_sigsys *)
 #ifdef si_syscall
 		&(info->si_call_addr);
@@ -150,10 +160,15 @@ static void TRAP_action(int nr, siginfo_t *info, void *void_context)
 			ctx->uc_mcontext.gregs[REG_ARG5]);
 	/* Send the soft-fail to our "listener" */
 	syscall(__NR_write, STDOUT_FILENO, buf, len);
-	/* push [REG_IP] */
-	ctx->uc_mcontext.gregs[REG_SP] -= sizeof(unsigned long);
-	*((unsigned long *)ctx->uc_mcontext.gregs[REG_SP]) =
-		ctx->uc_mcontext.gregs[REG_IP];
+	if (ctx->uc_mcontext.gregs[REG_IP] >= 0xffffffffff600000ULL &&
+	    ctx->uc_mcontext.gregs[REG_IP] < 0xffffffffff601000ULL)
+		do_ret = 0;
+	if (do_ret) {
+		/* push [REG_IP] */
+		ctx->uc_mcontext.gregs[REG_SP] -= sizeof(unsigned long);
+		*((unsigned long *)ctx->uc_mcontext.gregs[REG_SP]) =
+		    ctx->uc_mcontext.gregs[REG_IP];
+	}
 	/* jmp syscall_thunk */
 	ctx->uc_mcontext.gregs[REG_IP] = (unsigned long)syscall_thunk;
 	return;
@@ -194,7 +209,8 @@ TEST_F(TRAP, handler) {
 	ASSERT_EQ(0, ret);
 	ret = syscall(__NR_close, 0);
 	ASSERT_EQ(-1, ret);
-	ASSERT_LT(0, time(NULL));
+	printf("The time is %d\n", vsyscall_time(NULL));
+	ASSERT_LT(0, vsyscall_time(NULL));
 }
 
 TEST_HARNESS_MAIN

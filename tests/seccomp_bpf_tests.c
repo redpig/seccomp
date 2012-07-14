@@ -20,6 +20,7 @@
 #include <stdbool.h>
 #include <string.h>
 #include <syscall.h>
+#include <sys/user.h>
 
 #include "test_harness.h"
 
@@ -692,6 +693,7 @@ void tracer(struct __test_metadata *_metadata, pid_t tracee, unsigned long poke_
 	while (1) {
 		int status;
 		unsigned long msg;
+		struct user_regs_struct regs;
 		if (wait(&status) != tracee)
 			continue;
 		if (WIFSIGNALED(status) || WIFEXITED(status))
@@ -710,6 +712,16 @@ void tracer(struct __test_metadata *_metadata, pid_t tracee, unsigned long poke_
 		 */
 		ret = ptrace(PTRACE_POKEDATA, tracee, poke_addr, 0x1001);
 		EXPECT_EQ(0, ret);
+		/* Set eax to an error as well. */
+		ret = ptrace(PTRACE_GETREGS, tracee, NULL, &regs);
+		EXPECT_EQ(0, ret);
+		if (regs.orig_rax == __NR_time) {
+			regs.rax = 1001;
+			regs.orig_rax = -1;
+			ret = ptrace(PTRACE_SETREGS, tracee, NULL, &regs);
+			EXPECT_EQ(0, ret);
+		}
+		TH_LOG("regs.rip is %lx", regs.rip);
 		ret = ptrace(PTRACE_CONT, tracee, NULL, NULL);
 		EXPECT_EQ(0, ret);
 	}
@@ -729,6 +741,8 @@ FIXTURE_SETUP(TRACE) {
 		BPF_STMT(BPF_LD+BPF_W+BPF_ABS,
 			offsetof(struct seccomp_data, nr)),
 		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_time, 0, 1),
+		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_TRACE | 0x1001),
+		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_read, 0, 1),
 		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_TRACE | 0x1001),
 		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
 	};
@@ -765,7 +779,7 @@ FIXTURE_TEARDOWN(TRACE) {
 		free(self->prog.filter);
 };
 
-TEST_F(TRACE, time_has_side_effects) {
+TEST_F(TRACE, time_is_skipped) {
 	ssize_t ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
 	time_t t;
 	ASSERT_EQ(0, ret);
@@ -774,16 +788,28 @@ TEST_F(TRACE, time_has_side_effects) {
 	ASSERT_EQ(0, ret);
 
 	EXPECT_EQ(0, self->poked);
-	/* Try glibc first in case of vsyscall use. */
 	t = time(NULL);
-	EXPECT_LT(0, t);
-	if (self->poked != 0x1001) {
+	if (t != 1001) {
 		TH_LOG("userland vdso time helper");
 		t = syscall(__NR_time, NULL);
-		EXPECT_LT(0, t);
+		EXPECT_EQ(1001, t);
 	}
 	EXPECT_EQ(0x1001, self->poked);
 }
+
+TEST_F(TRACE, read_has_side_effects) {
+	ssize_t ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+	ASSERT_EQ(0, ret);
+
+	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->prog, 0, 0);
+	ASSERT_EQ(0, ret);
+
+	EXPECT_EQ(0, self->poked);
+	ret = syscall(__NR_read, -1, NULL, 0);
+	EXPECT_EQ(-1, ret);
+	EXPECT_EQ(0x1001, self->poked);
+}
+
 
 TEST_F(TRACE, getpid_runs_normally) {
 	int ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
