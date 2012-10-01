@@ -425,6 +425,8 @@ static int test_harness_run(int __attribute__((unused)) argc,
   unsigned int count = 0;
   unsigned int pass_count = 0;
 
+  setvbuf(stdout, NULL, _IONBF, 0);
+
   /* TODO(wad) add optional arguments similar to gtest. */
   printf("[==========] Running %u tests from %u test cases.\n",
           __test_count, __fixture_count + 1);
