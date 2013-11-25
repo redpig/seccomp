@@ -440,7 +440,7 @@ static void TRAP_action(int nr, siginfo_t *info, void *void_context)
 }
 
 TEST_F(TRAP, handler) {
-	int ret;
+	int ret, test;
 	struct sigaction act;
 	sigset_t mask;
 	memset(&act, 0, sizeof(act));
@@ -467,7 +467,9 @@ TEST_F(TRAP, handler) {
 	/* Expect the registers to be rolled back. (nr = error) may vary
 	 * based on arch. */
 	ret = syscall(__NR_getpid);
-	EXPECT_EQ(SIGSYS, TRAP_nr);
+	/* Silence gcc warning about volatile. */
+	test = TRAP_nr;
+	EXPECT_EQ(SIGSYS, test);
 	struct local_sigsys {
 			void *_call_addr; /* calling user insn */
 			int _syscall;	/* triggering system call number */
