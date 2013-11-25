@@ -209,7 +209,7 @@ TEST_F(TRAP, handler) {
 	ASSERT_EQ(0, ret);
 	ret = syscall(__NR_close, 0);
 	ASSERT_EQ(-1, ret);
-	printf("The time is %d\n", vsyscall_time(NULL));
+	printf("The time is %ld\n", vsyscall_time(NULL));
 	ASSERT_LT(0, vsyscall_time(NULL));
 }
 

@@ -41,6 +41,7 @@
 #define SECCOMP_MODE_FILTER 2
 #endif
 
+#ifndef SECCOMP_RET_KILL
 #define SECCOMP_RET_KILL        0x00000000U // kill the task immediately
 #define SECCOMP_RET_TRAP        0x00030000U // disallow and force a SIGSYS
 #define SECCOMP_RET_ERRNO       0x00050000U // returns an errno
@@ -57,6 +58,7 @@ struct seccomp_data {
 	__u64 instruction_pointer;
 	__u64 args[6];
 };
+#endif
 
 #define syscall_arg(_n) (offsetof(struct seccomp_data, args[_n]))
 
