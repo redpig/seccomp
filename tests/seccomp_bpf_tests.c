@@ -20,16 +20,43 @@
 #include <stdbool.h>
 #include <string.h>
 #include <syscall.h>
-#include <sys/user.h>
+#include <signal.h>
 
 #include "test_harness.h"
 
-#ifdef PR_SET_NO_NEW_PRIVS
-#undef PR_SET_NO_NEW_PRIVS
-#undef PR_GET_NO_NEW_PRIVS
+#ifndef PR_SET_PTRACER
+# define PR_SET_PTRACER 0x59616d61
 #endif
+
+#ifndef PR_SET_NO_NEW_PRIVS
 #define PR_SET_NO_NEW_PRIVS 38
 #define PR_GET_NO_NEW_PRIVS 39
+#endif
+
+#ifndef SECCOMP_MODE_STRICT
+#define SECCOMP_MODE_STRICT 1
+#endif
+
+#ifndef SECCOMP_MODE_FILTER
+#define SECCOMP_MODE_FILTER 2
+#endif
+
+#define SECCOMP_RET_KILL        0x00000000U // kill the task immediately
+#define SECCOMP_RET_TRAP        0x00030000U // disallow and force a SIGSYS
+#define SECCOMP_RET_ERRNO       0x00050000U // returns an errno
+#define SECCOMP_RET_TRACE       0x7ff00000U // pass to a tracer or disallow
+#define SECCOMP_RET_ALLOW       0x7fff0000U // allow
+
+/* Masks for the return value sections. */
+#define SECCOMP_RET_ACTION      0x7fff0000U
+#define SECCOMP_RET_DATA        0x0000ffffU
+
+struct seccomp_data {
+	int nr;
+	__u32 arch;
+	__u64 instruction_pointer;
+	__u64 args[6];
+};
 
 #define syscall_arg(_n) (offsetof(struct seccomp_data, args[_n]))
 
@@ -73,23 +100,28 @@ TEST(mode_filter_support) {
 	}
 }
 
-/* TODO(wad) add a TEST_IF_UID() wrapper */
 TEST(mode_filter_without_nnp) {
-	int expect_errno = EACCES;
-	errno = 0;
-	int ret = prctl(PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0);
+	struct sock_filter filter[] = {
+		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
+	};
+	struct sock_fprog prog = {
+		.len = (unsigned short)(sizeof(filter)/sizeof(filter[0])),
+		.filter = filter,
+	};
+	int ret = prctl(PR_GET_NO_NEW_PRIVS, 0, NULL, 0, 0);
 	ASSERT_LE(0, ret) {
-		TH_LOG("Expected 0 or unsupported for NO_NEW_PRIVS: %s", strerror(errno));
+		TH_LOG("Expected 0 or unsupported for NO_NEW_PRIVS");
 	}
+	errno = 0;
+	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog, 0, 0);
 	/* Succeeds with CAP_SYS_ADMIN, fails without */
 	/* TODO(wad) check caps not euid */
-	if (geteuid() == 0) {
-		expect_errno = EFAULT;
+	if (geteuid()) {
+		EXPECT_EQ(-1, ret);
+		EXPECT_EQ(EACCES, errno);
+	} else {
+		EXPECT_EQ(0, ret);
 	}
-	errno = 0;
-	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, NULL, NULL, NULL);
-	EXPECT_EQ(-1, ret);
-	EXPECT_EQ(expect_errno, errno);
 }
 
 TEST(mode_filter_cannot_move_to_strict) {
@@ -307,7 +339,7 @@ TEST(ERRNO_one) {
 	struct sock_filter filter[] = {
 		BPF_STMT(BPF_LD+BPF_W+BPF_ABS,
 			offsetof(struct seccomp_data, nr)),
-		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_time, 0, 1),
+		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_read, 0, 1),
 		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ERRNO | E2BIG),
 		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
 	};
@@ -323,12 +355,7 @@ TEST(ERRNO_one) {
 	ASSERT_EQ(0, ret);
 
 	EXPECT_EQ(parent, syscall(__NR_getppid));
-	EXPECT_EQ(-1, syscall(__NR_time, NULL));
-	EXPECT_EQ(E2BIG, errno);
-	if (time(NULL) < 0) {
-		TH_LOG("no userland vdso; don't expect glibc to populate an errno");
-		EXPECT_GT(0, time(NULL));
-	}
+	EXPECT_EQ(-1, read(0, NULL, 0));
 	EXPECT_EQ(E2BIG, errno);
 }
 
@@ -336,7 +363,7 @@ TEST(ERRNO_one_ok) {
 	struct sock_filter filter[] = {
 		BPF_STMT(BPF_LD+BPF_W+BPF_ABS,
 			offsetof(struct seccomp_data, nr)),
-		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_time, 0, 1),
+		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_read, 0, 1),
 		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ERRNO | 0),
 		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
 	};
@@ -353,13 +380,7 @@ TEST(ERRNO_one_ok) {
 
 	EXPECT_EQ(parent, syscall(__NR_getppid));
 	/* "errno" of 0 is ok. */
-	if (time(NULL) != 0) { /* then we have a userspace vdso helper */
-		TH_LOG("vdso userland time helper.");
-		EXPECT_EQ(0, syscall(__NR_time, NULL));
-	} else {
-		TH_LOG("NO vdso userland time helper.");
-		EXPECT_EQ(0, time(NULL));
-	}
+	EXPECT_EQ(0, read(0, NULL, 0));
 }
 
 FIXTURE_DATA(TRAP) {
@@ -371,8 +392,6 @@ FIXTURE_SETUP(TRAP) {
 		BPF_STMT(BPF_LD+BPF_W+BPF_ABS,
 			offsetof(struct seccomp_data, nr)),
 		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_getpid, 0, 1),
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_TRAP),
-		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_time, 0, 1),
 		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_TRAP),
 		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
 	};
@@ -394,8 +413,7 @@ TEST_F_SIGNAL(TRAP, dfl, SIGSYS) {
 
 	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->prog);
 	ASSERT_EQ(0, ret);
-	time(NULL);
-	syscall(__NR_time);
+	syscall(__NR_getpid);
 }
 
 /* Ensure that SIGSYS overrides SIG_IGN */
@@ -411,7 +429,7 @@ TEST_F_SIGNAL(TRAP, ign, SIGSYS) {
 }
 
 static struct siginfo TRAP_info;
-static int TRAP_nr;
+static volatile int TRAP_nr;
 static void TRAP_action(int nr, siginfo_t *info, void *void_context)
 {
 	memcpy(&TRAP_info, info, sizeof(TRAP_info));
@@ -444,7 +462,8 @@ TEST_F(TRAP, handler) {
 	ASSERT_EQ(0, ret);
 	TRAP_nr = 0;
 	memset(&TRAP_info, 0, sizeof(TRAP_info));
-	/* Expect the registers to be rolled back. (nr = error) may vary based on arch */
+	/* Expect the registers to be rolled back. (nr = error) may vary
+	 * based on arch. */
 	ret = syscall(__NR_getpid);
 	EXPECT_EQ(SIGSYS, TRAP_nr);
 	struct local_sigsys {
@@ -523,6 +542,27 @@ FIXTURE_TEARDOWN(precedence) {
 	FILTER_FREE(error);
 	FILTER_FREE(trap);
 	FILTER_FREE(kill);
+}
+
+TEST_F(precedence, allow_ok) {
+	int ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+	pid_t parent = getppid();
+	pid_t res = 0;
+	ASSERT_EQ(0, ret);
+
+	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->allow);
+	ASSERT_EQ(0, ret);
+	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->trace);
+	ASSERT_EQ(0, ret);
+	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->error);
+	ASSERT_EQ(0, ret);
+	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->trap);
+	ASSERT_EQ(0, ret);
+	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->kill);
+	ASSERT_EQ(0, ret);
+	/* Should work just fine. */
+	res = syscall(__NR_getppid);
+	EXPECT_EQ(parent, res);
 }
 
 TEST_F_SIGNAL(precedence, kill_is_highest, SIGSYS) {
@@ -673,7 +713,8 @@ TEST_F(precedence, trace_is_fourth_in_any_order) {
 #ifndef PTRACE_O_TRACESECCOMP
 #define PTRACE_O_TRACESECCOMP	0x00000080
 #endif
-void tracer(struct __test_metadata *_metadata, pid_t tracee, unsigned long poke_addr) {
+void tracer(struct __test_metadata *_metadata, pid_t tracee,
+	    unsigned long poke_addr, int fd) {
 	int ret = -1;
 	errno = 0;
 	while (ret == -1 && errno != EINVAL) {
@@ -684,16 +725,21 @@ void tracer(struct __test_metadata *_metadata, pid_t tracee, unsigned long poke_
 	}
 	/* Wait for attach stop */
 	wait(NULL);
+
 	ret = ptrace(PTRACE_SETOPTIONS, tracee, NULL, PTRACE_O_TRACESECCOMP);
 	ASSERT_EQ(0, ret) {
 		TH_LOG("Failed to set PTRACE_O_TRACESECCOMP");
 		kill(tracee, SIGKILL);
 	}
-	ptrace(PTRACE_CONT, tracee, NULL, SIGALRM);
+	ptrace(PTRACE_CONT, tracee, NULL, 0);
+
+	/* Unblock the tracee */
+	ASSERT_EQ(1, write(fd, "A", 1));
+	ASSERT_EQ(0, close(fd));
+
 	while (1) {
 		int status;
 		unsigned long msg;
-		struct user_regs_struct regs;
 		if (wait(&status) != tracee)
 			continue;
 		if (WIFSIGNALED(status) || WIFEXITED(status))
@@ -712,16 +758,6 @@ void tracer(struct __test_metadata *_metadata, pid_t tracee, unsigned long poke_
 		 */
 		ret = ptrace(PTRACE_POKEDATA, tracee, poke_addr, 0x1001);
 		EXPECT_EQ(0, ret);
-		/* Set eax to an error as well. */
-		ret = ptrace(PTRACE_GETREGS, tracee, NULL, &regs);
-		EXPECT_EQ(0, ret);
-		if (regs.orig_rax == __NR_time) {
-			regs.rax = 1001;
-			regs.orig_rax = -1;
-			ret = ptrace(PTRACE_SETREGS, tracee, NULL, &regs);
-			EXPECT_EQ(0, ret);
-		}
-		TH_LOG("regs.rip is %lx", regs.rip);
 		ret = ptrace(PTRACE_CONT, tracee, NULL, NULL);
 		EXPECT_EQ(0, ret);
 	}
@@ -730,7 +766,7 @@ void tracer(struct __test_metadata *_metadata, pid_t tracee, unsigned long poke_
 FIXTURE_DATA(TRACE) {
 	struct sock_fprog prog;
 	pid_t tracer;
-	int poked;
+	long poked;
 };
 
 void cont_handler(int num) {
@@ -740,12 +776,12 @@ FIXTURE_SETUP(TRACE) {
 	struct sock_filter filter[] = {
 		BPF_STMT(BPF_LD+BPF_W+BPF_ABS,
 			offsetof(struct seccomp_data, nr)),
-		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_time, 0, 1),
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_TRACE | 0x1001),
 		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_read, 0, 1),
 		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_TRACE | 0x1001),
 		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
 	};
+	int pipefd[2];
+	char sync;
 	pid_t tracer_pid;
 	pid_t tracee = getpid();
 	unsigned long poke_addr = (unsigned long)&self->poked;
@@ -756,20 +792,23 @@ FIXTURE_SETUP(TRACE) {
 	memcpy(self->prog.filter, filter, sizeof(filter));
 	self->prog.len = (unsigned short)(sizeof(filter)/sizeof(filter[0]));
 
+	/* Setup a pipe for clean synchronization. */
+	ASSERT_EQ(0, pipe(pipefd));
+
 	/* Fork a child which we'll promote to tracer */
 	tracer_pid = fork();
 	ASSERT_LE(0, tracer_pid);
 	signal(SIGALRM, cont_handler);
 	if (tracer_pid == 0) {
-		tracer(_metadata, tracee, poke_addr);
+		close(pipefd[0]);
+		tracer(_metadata, tracee, poke_addr, pipefd[1]);
 		syscall(__NR_exit, 0);
 	}
+	close(pipefd[1]);
 	self->tracer = tracer_pid;
-#ifdef PR_SET_PTRACER
 	prctl(PR_SET_PTRACER, self->tracer, 0, 0, 0);
-#endif
-	/* Install dummy handler */
-	pause();
+	read(pipefd[0], &sync, 1);
+	close(pipefd[0]);
 }
 
 FIXTURE_TEARDOWN(TRACE) {
@@ -779,24 +818,6 @@ FIXTURE_TEARDOWN(TRACE) {
 		free(self->prog.filter);
 };
 
-TEST_F(TRACE, time_is_skipped) {
-	ssize_t ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
-	time_t t;
-	ASSERT_EQ(0, ret);
-
-	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->prog, 0, 0);
-	ASSERT_EQ(0, ret);
-
-	EXPECT_EQ(0, self->poked);
-	t = time(NULL);
-	if (t != 1001) {
-		TH_LOG("userland vdso time helper");
-		t = syscall(__NR_time, NULL);
-		EXPECT_EQ(1001, t);
-	}
-	EXPECT_EQ(0x1001, self->poked);
-}
-
 TEST_F(TRACE, read_has_side_effects) {
 	ssize_t ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
 	ASSERT_EQ(0, ret);
@@ -805,11 +826,10 @@ TEST_F(TRACE, read_has_side_effects) {
 	ASSERT_EQ(0, ret);
 
 	EXPECT_EQ(0, self->poked);
-	ret = syscall(__NR_read, -1, NULL, 0);
+	ret = read(-1, NULL, 0);
 	EXPECT_EQ(-1, ret);
 	EXPECT_EQ(0x1001, self->poked);
 }
-
 
 TEST_F(TRACE, getpid_runs_normally) {
 	int ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
@@ -827,7 +847,7 @@ TEST_F(TRACE, getpid_runs_normally) {
  * TODO:
  * - add microbenchmarks
  * - expand NNP testing
- * - add arch-specific TRACE and TRAP handlers.
+ * - better arch-specific TRACE and TRAP handlers.
  * - endianness checking when appropriate
  * - 64-bit arg prodding
  * - arch value testing (x86 modes especially)
