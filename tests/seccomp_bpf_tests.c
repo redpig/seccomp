@@ -22,6 +22,7 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <syscall.h>
 
 #include "test_harness.h"
@@ -894,12 +895,14 @@ TEST(pr_seccomp_ext_without_seccomp) {
 }
 
 #define TSYNC_SIBLINGS 2
+#define TSYNC_OFFSET 64
 struct tsync_sibling {
 	pthread_t tid;
 	pid_t system_tid;
 	sem_t *started;
 	pthread_cond_t *cond;
 	pthread_mutex_t *mutex;
+	void *map;
 	int diverge;
 	int num_waits;
 	struct sock_fprog *prog;
@@ -991,19 +994,38 @@ void *tsync_sibling(void *data)
 {
 	struct tsync_sibling *me = data;
 	struct __test_metadata *_metadata = me->metadata; /* enable TH_LOG */
+	long ret;
+	char buf;
 	me->system_tid = syscall(__NR_gettid);
 
 	pthread_mutex_lock(me->mutex);
-	if (me->diverge) {
+	switch (me->diverge) {
+	case 2: {
+		volatile int *count = (int *)me->map;
+		TH_LOG("map is %p", me->map);
+		/* Strict can't use semaphore or mutexes, etc so just GO */
+		pthread_mutex_unlock(me->mutex);
+		ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_STRICT, 0, 0, 0);
+		if (ret)
+			return (void *)0xbadfac3;
+		count[0] = 1;
+		/* Wait for a wakeup */
+		while (!count[1]) sleep(0.1);
+		break;
+	}
+	case 1:
 		/* Just re-apply the root prog to fork the tree */
-		long ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER,
+		ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER,
 				me->prog, 0, 0);
 		if (ret)
 			return (void *)0xbadface;
+		/* Fall through */
+	default:
+		sem_post(me->started);
+		while (me->num_waits--) pthread_cond_wait(me->cond, me->mutex);
+		pthread_mutex_unlock(me->mutex);
+		break;
 	}
-	sem_post(me->started);
-	while (me->num_waits--) pthread_cond_wait(me->cond, me->mutex);
-	pthread_mutex_unlock(me->mutex);
 	read(0, NULL, 0);
 	return (void *)0xbadbeef;
 }
@@ -1086,15 +1108,71 @@ TEST_F(TSYNC, two_siblings_with_one_divergence) {
 	EXPECT_EQ(0x0, (long)status);
 }
 
+TEST_F(TSYNC, two_siblings_with_strict) {
+	long ret, sib;
+	void *status;
+	void *shared_map = mmap(NULL, 4096, PROT_READ|PROT_WRITE,
+				MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+	volatile int *count = (volatile int *)shared_map;
+
+	memset(shared_map, 0, 4096);
+	self->sibling[0].map = shared_map;
+	self->sibling[0].diverge = 2;
+	self->sibling[1].map = shared_map + (TSYNC_OFFSET * sizeof(int));
+	self->sibling[1].diverge = 2;
+
+	pthread_mutex_lock(&self->mutex);
+	tsync_start_sibling(&self->sibling[0]);
+	tsync_start_sibling(&self->sibling[1]);
+	pthread_mutex_unlock(&self->mutex);
+
+	while (!*count && !*(count + TSYNC_OFFSET)) sleep(0.1);
+	self->sibling_count = TSYNC_SIBLINGS;
+
+	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->root_prog, 0, 0);
+	ASSERT_EQ(0, ret) {
+		TH_LOG("Kernel does not support SECCOMP_MODE_FILTER!");
+	}
+
+	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->apply_prog, 0, 0);
+	ASSERT_EQ(0, ret) {
+		TH_LOG("Failed to install second filter.");
+	}
+
+	ret = prctl(PR_SECCOMP_EXT, SECCOMP_EXT_ACT, SECCOMP_EXT_ACT_TSYNC, 0, 0);
+	ASSERT_NE(0, (ret == self->sibling[0].system_tid ||
+		      ret == self->sibling[1].system_tid));
+	sib = 1;
+	if (ret == self->sibling[0].system_tid)
+		sib = 0;
+
+	/* Signal the thread to clean up*/
+	count[(sib * TSYNC_OFFSET) + 1] = 1;
+	pthread_join(self->sibling[sib].tid, &status);
+	EXPECT_EQ(0xbadbeef, (long)status);
+	/* Poll for actual task death. pthread_join doesn't guarantee it. */
+	while (!kill(self->sibling[sib].system_tid, 0)) sleep(0.1);
+	/* Switch to the remaining sibling */
+	sib = !sib;
+
+	ret = prctl(PR_SECCOMP_EXT, SECCOMP_EXT_ACT, SECCOMP_EXT_ACT_TSYNC, 0, 0);
+	ASSERT_EQ(self->sibling[sib].system_tid, ret) {
+		TH_LOG("Expected the remaining thread TID to be returned");
+	};
+
+	count[(sib * TSYNC_OFFSET) + 1] = 1;
+	pthread_join(self->sibling[sib].tid, &status);
+	EXPECT_EQ(0xbadbeef, (long)status);
+	/* Poll for actual task death. pthread_join doesn't guarantee it. */
+	while (!kill(self->sibling[sib].system_tid, 0)) sleep(0.1);
+
+	ret = prctl(PR_SECCOMP_EXT, SECCOMP_EXT_ACT, SECCOMP_EXT_ACT_TSYNC, 0, 0);
+	ASSERT_EQ(0, ret);  /* just us chickens */
+}
+
 TEST_F(TSYNC, two_siblings_not_under_filter) {
 	long ret, sib;
 	void *status;
-	/*
-	 * Sibling 0 will have its own seccomp policy
-	 * and Sibling 1 will not be under seccomp at
-	 * all.
-	 */
-	self->sibling[0].diverge = 1;
 	tsync_start_sibling(&self->sibling[0]);
 	tsync_start_sibling(&self->sibling[1]);
 
@@ -1113,47 +1191,20 @@ TEST_F(TSYNC, two_siblings_not_under_filter) {
 		TH_LOG("Failed to install second filter.");
 	}
 
+	/* Both should be upgraded to seccomp mode=2 */
 	ret = prctl(PR_SECCOMP_EXT, SECCOMP_EXT_ACT, SECCOMP_EXT_ACT_TSYNC, 0, 0);
-	ASSERT_NE(0, (ret == self->sibling[0].system_tid ||
-		      ret == self->sibling[1].system_tid));
-	sib = 1;
-	if (ret == self->sibling[0].system_tid)
-		sib = 0;
-	/* Increment the other siblings num_waits so we can clean up
-	 * the one we just saw.
-	 */
-	self->sibling[!sib].num_waits += 1;
+	EXPECT_EQ(0, ret);
 
-	/* Signal the thread to clean up*/
+	/* Signal the threads to get killed by the kernel */
 	pthread_mutex_lock(&self->mutex);
 	ASSERT_EQ(0, pthread_cond_broadcast(&self->cond)) {
 		TH_LOG("cond broadcast non-zero");
 	}
 	pthread_mutex_unlock(&self->mutex);
-	pthread_join(self->sibling[sib].tid, &status);
-	EXPECT_EQ(0xbadbeef, (long)status);
-	/* Poll for actual task death. pthread_join doesn't guarantee it. */
-	while (!kill(self->sibling[sib].system_tid, 0)) sleep(0.1);
-	/* Switch to the remaining sibling */
-	sib = !sib;
-
-	ret = prctl(PR_SECCOMP_EXT, SECCOMP_EXT_ACT, SECCOMP_EXT_ACT_TSYNC, 0, 0);
-	ASSERT_EQ(self->sibling[sib].system_tid, ret) {
-		TH_LOG("Expected the remaining thread TID to be returned");
-	};
-
-	pthread_mutex_lock(&self->mutex);
-	ASSERT_EQ(0, pthread_cond_broadcast(&self->cond)) {
-		TH_LOG("cond broadcast non-zero");
-	}
-	pthread_mutex_unlock(&self->mutex);
-	pthread_join(self->sibling[sib].tid, &status);
-	EXPECT_EQ(0xbadbeef, (long)status);
-	/* Poll for actual task death. pthread_join doesn't guarantee it. */
-	while (!kill(self->sibling[sib].system_tid, 0)) sleep(0.1);
-
-	ret = prctl(PR_SECCOMP_EXT, SECCOMP_EXT_ACT, SECCOMP_EXT_ACT_TSYNC, 0, 0);
-	ASSERT_EQ(0, ret);  /* just us chickens */
+	pthread_join(self->sibling[0].tid, &status);
+	EXPECT_EQ(0, (long)status);
+	pthread_join(self->sibling[1].tid, &status);
+	EXPECT_EQ(0, (long)status);
 }
 
 /*
