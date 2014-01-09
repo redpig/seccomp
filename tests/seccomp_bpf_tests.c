@@ -16,11 +16,13 @@
 #include <linux/prctl.h>
 #include <linux/ptrace.h>
 #include <linux/seccomp.h>
+#include <pthread.h>
+#include <semaphore.h>
+#include <signal.h>
 #include <stddef.h>
 #include <stdbool.h>
 #include <string.h>
 #include <syscall.h>
-#include <signal.h>
 
 #include "test_harness.h"
 
@@ -31,6 +33,18 @@
 #ifndef PR_SET_NO_NEW_PRIVS
 #define PR_SET_NO_NEW_PRIVS 38
 #define PR_GET_NO_NEW_PRIVS 39
+#endif
+
+#ifndef PR_SECCOMP_EXT
+#define PR_SECCOMP_EXT 41
+#endif
+
+#ifndef SECCOMP_EXT_ACT
+#define SECCOMP_EXT_ACT 1
+#endif
+
+#ifndef SECCOMP_EXT_ACT_TSYNC
+#define SECCOMP_EXT_ACT_TSYNC 1
 #endif
 
 #ifndef SECCOMP_MODE_STRICT
@@ -63,7 +77,7 @@ struct seccomp_data {
 #define syscall_arg(_n) (offsetof(struct seccomp_data, args[_n]))
 
 TEST(mode_strict_support) {
-	int ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_STRICT, NULL, NULL, NULL);
+	long ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_STRICT, NULL, NULL, NULL);
 	ASSERT_EQ(0, ret) {
 		TH_LOG("Kernel does not support CONFIG_SECCOMP");
 	}
@@ -71,7 +85,7 @@ TEST(mode_strict_support) {
 }
 
 TEST_SIGNAL(mode_strict_cannot_call_prctl, SIGKILL) {
-	int ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_STRICT, NULL, NULL, NULL);
+	long ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_STRICT, NULL, NULL, NULL);
 	ASSERT_EQ(0, ret) {
 		TH_LOG("Kernel does not support CONFIG_SECCOMP");
 	}
@@ -83,7 +97,7 @@ TEST_SIGNAL(mode_strict_cannot_call_prctl, SIGKILL) {
 
 /* Note! This doesn't test no new privs behavior */
 TEST(no_new_privs_support) {
-	int ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+	long ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
 	EXPECT_EQ(0, ret) {
 		TH_LOG("Kernel does not support PR_SET_NO_NEW_PRIVS!");
 	}
@@ -91,7 +105,7 @@ TEST(no_new_privs_support) {
 
 /* Tests kernel support by checking for a copy_from_user() fault on * NULL. */
 TEST(mode_filter_support) {
-	int ret = prctl(PR_SET_NO_NEW_PRIVS, 1, NULL, 0, 0);
+	long ret = prctl(PR_SET_NO_NEW_PRIVS, 1, NULL, 0, 0);
 	ASSERT_EQ(0, ret) {
 		TH_LOG("Kernel does not support PR_SET_NO_NEW_PRIVS!");
 	}
@@ -110,7 +124,7 @@ TEST(mode_filter_without_nnp) {
 		.len = (unsigned short)(sizeof(filter)/sizeof(filter[0])),
 		.filter = filter,
 	};
-	int ret = prctl(PR_GET_NO_NEW_PRIVS, 0, NULL, 0, 0);
+	long ret = prctl(PR_GET_NO_NEW_PRIVS, 0, NULL, 0, 0);
 	ASSERT_LE(0, ret) {
 		TH_LOG("Expected 0 or unsupported for NO_NEW_PRIVS");
 	}
@@ -135,7 +149,7 @@ TEST(mode_filter_cannot_move_to_strict) {
 		.filter = filter,
 	};
 
-	int ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+	long ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
 	ASSERT_EQ(0, ret);
 
 	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog, 0, 0);
@@ -156,7 +170,7 @@ TEST(ALLOW_all) {
 		.filter = filter,
 	};
 
-	int ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+	long ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
 	ASSERT_EQ(0, ret);
 
 	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog);
@@ -171,7 +185,7 @@ TEST(empty_prog) {
 		.filter = filter,
 	};
 
-	int ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+	long ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
 	ASSERT_EQ(0, ret);
 
 	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog);
@@ -188,7 +202,7 @@ TEST_SIGNAL(unknown_ret_is_kill_inside, SIGSYS) {
 		.filter = filter,
 	};
 
-	int ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+	long ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
 	ASSERT_EQ(0, ret);
 
 	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog);
@@ -208,7 +222,7 @@ TEST_SIGNAL(unknown_ret_is_kill_above_allow, SIGSYS) {
 		.filter = filter,
 	};
 
-	int ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+	long ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
 	ASSERT_EQ(0, ret);
 
 	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog);
@@ -227,7 +241,7 @@ TEST_SIGNAL(KILL_all, SIGSYS) {
 		.filter = filter,
 	};
 
-	int ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+	long ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
 	ASSERT_EQ(0, ret);
 
 	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog);
@@ -246,7 +260,7 @@ TEST_SIGNAL(KILL_one, SIGSYS) {
 		.len = (unsigned short)(sizeof(filter)/sizeof(filter[0])),
 		.filter = filter,
 	};
-	int ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+	long ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
 	pid_t parent = getppid();
 	ASSERT_EQ(0, ret);
 
@@ -274,7 +288,7 @@ TEST_SIGNAL(KILL_one_arg_one, SIGSYS) {
 		.len = (unsigned short)(sizeof(filter)/sizeof(filter[0])),
 		.filter = filter,
 	};
-	int ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+	long ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
 	pid_t parent = getppid();
 	pid_t pid = getpid();
 	ASSERT_EQ(0, ret);
@@ -304,7 +318,7 @@ TEST_SIGNAL(KILL_one_arg_six, SIGSYS) {
 		.len = (unsigned short)(sizeof(filter)/sizeof(filter[0])),
 		.filter = filter,
 	};
-	int ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+	long ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
 	pid_t parent = getppid();
 	pid_t pid = getpid();
 	ASSERT_EQ(0, ret);
@@ -329,7 +343,7 @@ TEST(arg_out_of_range) {
 		.len = (unsigned short)(sizeof(filter)/sizeof(filter[0])),
 		.filter = filter,
 	};
-	int ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+	long ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
 	ASSERT_EQ(0, ret);
 
 	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog);
@@ -349,7 +363,7 @@ TEST(ERRNO_one) {
 		.len = (unsigned short)(sizeof(filter)/sizeof(filter[0])),
 		.filter = filter,
 	};
-	int ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+	long ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
 	pid_t parent = getppid();
 	ASSERT_EQ(0, ret);
 
@@ -373,7 +387,7 @@ TEST(ERRNO_one_ok) {
 		.len = (unsigned short)(sizeof(filter)/sizeof(filter[0])),
 		.filter = filter,
 	};
-	int ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+	long ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
 	pid_t parent = getppid();
 	ASSERT_EQ(0, ret);
 
@@ -410,7 +424,7 @@ FIXTURE_TEARDOWN(TRAP) {
 };
 
 TEST_F_SIGNAL(TRAP, dfl, SIGSYS) {
-	int ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+	long ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
 	ASSERT_EQ(0, ret);
 
 	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->prog);
@@ -420,7 +434,7 @@ TEST_F_SIGNAL(TRAP, dfl, SIGSYS) {
 
 /* Ensure that SIGSYS overrides SIG_IGN */
 TEST_F_SIGNAL(TRAP, ign, SIGSYS) {
-	int ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+	long ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
 	ASSERT_EQ(0, ret);
 
 	signal(SIGSYS, SIG_IGN);
@@ -549,7 +563,7 @@ FIXTURE_TEARDOWN(precedence) {
 }
 
 TEST_F(precedence, allow_ok) {
-	int ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+	long ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
 	pid_t parent = getppid();
 	pid_t res = 0;
 	ASSERT_EQ(0, ret);
@@ -570,7 +584,7 @@ TEST_F(precedence, allow_ok) {
 }
 
 TEST_F_SIGNAL(precedence, kill_is_highest, SIGSYS) {
-	int ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+	long ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
 	pid_t parent = getppid();
 	pid_t res = 0;
 	ASSERT_EQ(0, ret);
@@ -594,7 +608,7 @@ TEST_F_SIGNAL(precedence, kill_is_highest, SIGSYS) {
 }
 
 TEST_F_SIGNAL(precedence, kill_is_highest_in_any_order, SIGSYS) {
-	int ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+	long ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
 	pid_t parent = getppid();
 	ASSERT_EQ(0, ret);
 
@@ -615,7 +629,7 @@ TEST_F_SIGNAL(precedence, kill_is_highest_in_any_order, SIGSYS) {
 }
 
 TEST_F_SIGNAL(precedence, trap_is_second, SIGSYS) {
-	int ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+	long ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
 	pid_t parent = getppid();
 	ASSERT_EQ(0, ret);
 
@@ -634,7 +648,7 @@ TEST_F_SIGNAL(precedence, trap_is_second, SIGSYS) {
 }
 
 TEST_F_SIGNAL(precedence, trap_is_second_in_any_order, SIGSYS) {
-	int ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+	long ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
 	pid_t parent = getppid();
 	ASSERT_EQ(0, ret);
 
@@ -653,7 +667,7 @@ TEST_F_SIGNAL(precedence, trap_is_second_in_any_order, SIGSYS) {
 }
 
 TEST_F(precedence, errno_is_third) {
-	int ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+	long ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
 	pid_t parent = getppid();
 	ASSERT_EQ(0, ret);
 
@@ -669,7 +683,7 @@ TEST_F(precedence, errno_is_third) {
 }
 
 TEST_F(precedence, errno_is_third_in_any_order) {
-	int ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+	long ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
 	pid_t parent = getppid();
 	ASSERT_EQ(0, ret);
 
@@ -685,7 +699,7 @@ TEST_F(precedence, errno_is_third_in_any_order) {
 }
 
 TEST_F(precedence, trace_is_fourth) {
-	int ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+	long ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
 	pid_t parent = getppid();
 	ASSERT_EQ(0, ret);
 
@@ -700,7 +714,7 @@ TEST_F(precedence, trace_is_fourth) {
 }
 
 TEST_F(precedence, trace_is_fourth_in_any_order) {
-	int ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+	long ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
 	pid_t parent = getppid();
 	ASSERT_EQ(0, ret);
 
@@ -836,7 +850,7 @@ TEST_F(TRACE, read_has_side_effects) {
 }
 
 TEST_F(TRACE, getpid_runs_normally) {
-	int ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+	long ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
 	ASSERT_EQ(0, ret);
 
 	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->prog, 0, 0);
@@ -845,6 +859,301 @@ TEST_F(TRACE, getpid_runs_normally) {
 	EXPECT_EQ(0, self->poked);
 	EXPECT_NE(0, syscall(__NR_getpid));
 	EXPECT_EQ(0, self->poked);
+}
+
+
+TEST(pr_seccomp_ext) {
+	struct sock_filter filter[] = {
+		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
+	};
+	struct sock_fprog prog = {
+		.len = (unsigned short)(sizeof(filter)/sizeof(filter[0])),
+		.filter = filter,
+	};
+	long ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+	ASSERT_EQ(0, ret) {
+		TH_LOG("Kernel does not support PR_SET_NO_NEW_PRIVS!");
+	}
+	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog, 0, 0);
+	ASSERT_EQ(0, ret) {
+		TH_LOG("Kernel does not support SECCOMP_MODE_FILTER!");
+	}
+	/* No threads, so this should work. */
+	ret = prctl(PR_SECCOMP_EXT, SECCOMP_EXT_ACT, SECCOMP_EXT_ACT_TSYNC, 0, 0);
+	ASSERT_EQ(0, ret) {
+		TH_LOG("Kernel does not support SECCOMP_EXT_ACT!");
+	}
+}
+
+TEST(pr_seccomp_ext_without_seccomp) {
+	long ret = prctl(PR_SECCOMP_EXT, SECCOMP_EXT_ACT,
+			 SECCOMP_EXT_ACT_TSYNC, 0, 0);
+	ASSERT_NE(0, ret) {
+		TH_LOG("Passed unexpectedly. Was this run with a parent filter?");
+	}
+}
+
+#define TSYNC_SIBLINGS 2
+struct tsync_sibling {
+	pthread_t tid;
+	pid_t system_tid;
+	sem_t *started;
+	pthread_cond_t *cond;
+	pthread_mutex_t *mutex;
+	int diverge;
+	int num_waits;
+	struct sock_fprog *prog;
+	struct __test_metadata *metadata;
+};
+
+FIXTURE_DATA(TSYNC) {
+	struct sock_fprog root_prog, apply_prog;
+	struct tsync_sibling sibling[TSYNC_SIBLINGS];
+	sem_t started;
+	pthread_cond_t cond;
+	pthread_mutex_t mutex;
+	int sibling_count;
+};
+
+FIXTURE_SETUP(TSYNC) {
+	struct sock_filter root_filter[] = {
+		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
+	};
+	struct sock_filter apply_filter[] = {
+		BPF_STMT(BPF_LD+BPF_W+BPF_ABS,
+			offsetof(struct seccomp_data, nr)),
+		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_read, 0, 1),
+		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_KILL),
+		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
+	};
+	memset(&self->root_prog, 0, sizeof(self->root_prog));
+	memset(&self->apply_prog, 0, sizeof(self->apply_prog));
+	memset(&self->sibling, 0, sizeof(self->sibling));
+	self->root_prog.filter = malloc(sizeof(root_filter));
+	ASSERT_NE(NULL, self->root_prog.filter);
+	memcpy(self->root_prog.filter, &root_filter, sizeof(root_filter));
+	self->root_prog.len = (unsigned short)(sizeof(root_filter)/sizeof(root_filter[0]));
+
+	self->apply_prog.filter = malloc(sizeof(apply_filter));
+	ASSERT_NE(NULL, self->apply_prog.filter);
+	memcpy(self->apply_prog.filter, &apply_filter, sizeof(apply_filter));
+	self->apply_prog.len = (unsigned short)(sizeof(apply_filter)/sizeof(apply_filter[0]));
+
+	self->sibling_count = 0;
+	pthread_mutex_init(&self->mutex, NULL);
+	pthread_cond_init(&self->cond, NULL);
+	sem_init(&self->started, 0, 0);
+	self->sibling[0].tid = 0;
+	self->sibling[0].cond = &self->cond;
+	self->sibling[0].started = &self->started;
+	self->sibling[0].mutex = &self->mutex;
+	self->sibling[0].diverge = 0;
+	self->sibling[0].num_waits = 1;
+	self->sibling[0].prog = &self->root_prog;
+	self->sibling[0].metadata = _metadata;
+	self->sibling[1].tid = 0;
+	self->sibling[1].cond = &self->cond;
+	self->sibling[1].started = &self->started;
+	self->sibling[1].mutex = &self->mutex;
+	self->sibling[1].diverge = 0;
+	self->sibling[1].prog = &self->root_prog;
+	self->sibling[1].num_waits = 1;
+	self->sibling[1].metadata = _metadata;
+
+	ASSERT_EQ(0, prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)) {
+		TH_LOG("Kernel does not support PR_SET_NO_NEW_PRIVS!");
+	}
+}
+
+FIXTURE_TEARDOWN(TSYNC) {
+	int sib = 0;
+	if (self->root_prog.filter)
+		free(self->root_prog.filter);
+	if (self->apply_prog.filter)
+		free(self->apply_prog.filter);
+
+	for ( ; sib < self->sibling_count; ++sib) {
+		struct tsync_sibling *s = &self->sibling[sib];
+		void *status;
+		if (!s->tid)
+			continue;
+		if (pthread_kill(s->tid, 0)) {
+			pthread_cancel(s->tid);
+			pthread_join(s->tid, &status);
+		}
+	}
+	pthread_mutex_destroy(&self->mutex);
+	pthread_cond_destroy(&self->cond);
+	sem_destroy(&self->started);
+};
+
+void *tsync_sibling(void *data)
+{
+	struct tsync_sibling *me = data;
+	struct __test_metadata *_metadata = me->metadata; /* enable TH_LOG */
+	me->system_tid = syscall(__NR_gettid);
+
+	pthread_mutex_lock(me->mutex);
+	if (me->diverge) {
+		/* Just re-apply the root prog to fork the tree */
+		long ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER,
+				me->prog, 0, 0);
+		if (ret)
+			return (void *)0xbadface;
+	}
+	sem_post(me->started);
+	while (me->num_waits--) pthread_cond_wait(me->cond, me->mutex);
+	pthread_mutex_unlock(me->mutex);
+	read(0, NULL, 0);
+	return (void *)0xbadbeef;
+}
+
+void tsync_start_sibling(struct tsync_sibling *sibling)
+{
+	pthread_create(&sibling->tid, NULL, tsync_sibling, (void *)sibling);
+}
+
+TEST_F(TSYNC, two_siblings_with_ancestor) {
+	long ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->root_prog, 0, 0);
+	void *status;
+	ASSERT_EQ(0, ret) {
+		TH_LOG("Kernel does not support SECCOMP_MODE_FILTER!");
+	}
+	tsync_start_sibling(&self->sibling[0]);
+	tsync_start_sibling(&self->sibling[1]);
+
+	while (self->sibling_count < TSYNC_SIBLINGS) {
+		sem_wait(&self->started);
+		self->sibling_count++;
+	}
+
+	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->apply_prog, 0, 0);
+	ASSERT_EQ(0, ret) {
+		TH_LOG("Failed to install second filter.");
+	}
+
+	ret = prctl(PR_SECCOMP_EXT, SECCOMP_EXT_ACT, SECCOMP_EXT_ACT_TSYNC, 0, 0);
+	ASSERT_EQ(0, ret) {
+		TH_LOG("Could not move all threads!");
+	}
+	/* Tell the siblings to test the policy */
+	pthread_mutex_lock(&self->mutex);
+	ASSERT_EQ(0, pthread_cond_broadcast(&self->cond)) {
+		TH_LOG("cond broadcast non-zero");
+	}
+	pthread_mutex_unlock(&self->mutex);
+	/* Ensure they are both killed and don't exit cleanly. */
+	pthread_join(self->sibling[0].tid, &status);
+	EXPECT_EQ(0x0, (long)status);
+	pthread_join(self->sibling[1].tid, &status);
+	EXPECT_EQ(0x0, (long)status);
+}
+
+TEST_F(TSYNC, two_siblings_with_one_divergence) {
+	long ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->root_prog, 0, 0);
+	void *status;
+	ASSERT_EQ(0, ret) {
+		TH_LOG("Kernel does not support SECCOMP_MODE_FILTER!");
+	}
+	self->sibling[0].diverge = 1;
+	tsync_start_sibling(&self->sibling[0]);
+	tsync_start_sibling(&self->sibling[1]);
+
+	while (self->sibling_count < TSYNC_SIBLINGS) {
+		sem_wait(&self->started);
+		self->sibling_count++;
+	}
+
+	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->apply_prog, 0, 0);
+	ASSERT_EQ(0, ret) {
+		TH_LOG("Failed to install second filter.");
+	}
+
+	ret = prctl(PR_SECCOMP_EXT, SECCOMP_EXT_ACT, SECCOMP_EXT_ACT_TSYNC, 0, 0);
+	ASSERT_EQ(self->sibling[0].system_tid, ret);
+
+	/* Wake the threads */
+	pthread_mutex_lock(&self->mutex);
+	ASSERT_EQ(0, pthread_cond_broadcast(&self->cond)) {
+		TH_LOG("cond broadcast non-zero");
+	}
+	pthread_mutex_unlock(&self->mutex);
+
+	/* Ensure they are both killed and don't exit cleanly. */
+	pthread_join(self->sibling[0].tid, &status);
+	EXPECT_EQ(0xbadbeef, (long)status);
+	pthread_join(self->sibling[1].tid, &status);
+	EXPECT_EQ(0x0, (long)status);
+}
+
+TEST_F(TSYNC, two_siblings_not_under_filter) {
+	long ret, sib;
+	void *status;
+	/*
+	 * Sibling 0 will have its own seccomp policy
+	 * and Sibling 1 will not be under seccomp at
+	 * all.
+	 */
+	self->sibling[0].diverge = 1;
+	tsync_start_sibling(&self->sibling[0]);
+	tsync_start_sibling(&self->sibling[1]);
+
+	while (self->sibling_count < TSYNC_SIBLINGS) {
+		sem_wait(&self->started);
+		self->sibling_count++;
+	}
+
+	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->root_prog, 0, 0);
+	ASSERT_EQ(0, ret) {
+		TH_LOG("Kernel does not support SECCOMP_MODE_FILTER!");
+	}
+
+	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->apply_prog, 0, 0);
+	ASSERT_EQ(0, ret) {
+		TH_LOG("Failed to install second filter.");
+	}
+
+	ret = prctl(PR_SECCOMP_EXT, SECCOMP_EXT_ACT, SECCOMP_EXT_ACT_TSYNC, 0, 0);
+	ASSERT_NE(0, (ret == self->sibling[0].system_tid ||
+		      ret == self->sibling[1].system_tid));
+	sib = 1;
+	if (ret == self->sibling[0].system_tid)
+		sib = 0;
+	/* Increment the other siblings num_waits so we can clean up
+	 * the one we just saw.
+	 */
+	self->sibling[!sib].num_waits += 1;
+
+	/* Signal the thread to clean up*/
+	pthread_mutex_lock(&self->mutex);
+	ASSERT_EQ(0, pthread_cond_broadcast(&self->cond)) {
+		TH_LOG("cond broadcast non-zero");
+	}
+	pthread_mutex_unlock(&self->mutex);
+	pthread_join(self->sibling[sib].tid, &status);
+	EXPECT_EQ(0xbadbeef, (long)status);
+	/* Poll for actual task death. pthread_join doesn't guarantee it. */
+	while (!kill(self->sibling[sib].system_tid, 0)) sleep(0.1);
+	/* Switch to the remaining sibling */
+	sib = !sib;
+
+	ret = prctl(PR_SECCOMP_EXT, SECCOMP_EXT_ACT, SECCOMP_EXT_ACT_TSYNC, 0, 0);
+	ASSERT_EQ(self->sibling[sib].system_tid, ret) {
+		TH_LOG("Expected the remaining thread TID to be returned");
+	};
+
+	pthread_mutex_lock(&self->mutex);
+	ASSERT_EQ(0, pthread_cond_broadcast(&self->cond)) {
+		TH_LOG("cond broadcast non-zero");
+	}
+	pthread_mutex_unlock(&self->mutex);
+	pthread_join(self->sibling[sib].tid, &status);
+	EXPECT_EQ(0xbadbeef, (long)status);
+	/* Poll for actual task death. pthread_join doesn't guarantee it. */
+	while (!kill(self->sibling[sib].system_tid, 0)) sleep(0.1);
+
+	ret = prctl(PR_SECCOMP_EXT, SECCOMP_EXT_ACT, SECCOMP_EXT_ACT_TSYNC, 0, 0);
+	ASSERT_EQ(0, ret);  /* just us chickens */
 }
 
 /*
