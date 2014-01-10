@@ -1002,7 +1002,6 @@ void *tsync_sibling(void *data)
 	switch (me->diverge) {
 	case 2: {
 		volatile int *count = (int *)me->map;
-		TH_LOG("map is %p", me->map);
 		/* Strict can't use semaphore or mutexes, etc so just GO */
 		pthread_mutex_unlock(me->mutex);
 		ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_STRICT, 0, 0, 0);
