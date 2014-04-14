@@ -36,7 +36,7 @@
 #endif
 
 #ifndef PR_SECCOMP_EXT
-#define PR_SECCOMP_EXT 41
+#define PR_SECCOMP_EXT 43
 #endif
 
 #ifndef SECCOMP_EXT_ACT
@@ -1092,7 +1092,8 @@ TEST_F(TSYNC, two_siblings_not_under_filter) {
 	/*
 	 * Sibling 0 will have its own seccomp policy
 	 * and Sibling 1 will not be under seccomp at
-	 * all.
+	 * all. Sibling 1 will enter seccomp and 0
+	 * will cause failure.
 	 */
 	self->sibling[0].diverge = 1;
 	tsync_start_sibling(&self->sibling[0]);
@@ -1114,8 +1115,9 @@ TEST_F(TSYNC, two_siblings_not_under_filter) {
 	}
 
 	ret = prctl(PR_SECCOMP_EXT, SECCOMP_EXT_ACT, SECCOMP_EXT_ACT_TSYNC, 0, 0);
-	ASSERT_NE(0, (ret == self->sibling[0].system_tid ||
-		      ret == self->sibling[1].system_tid));
+	ASSERT_EQ(ret, self->sibling[0].system_tid) {
+		TH_LOG("Did not fail on diverged sibling.");
+	}
 	sib = 1;
 	if (ret == self->sibling[0].system_tid)
 		sib = 0;
@@ -1138,8 +1140,8 @@ TEST_F(TSYNC, two_siblings_not_under_filter) {
 	sib = !sib;
 
 	ret = prctl(PR_SECCOMP_EXT, SECCOMP_EXT_ACT, SECCOMP_EXT_ACT_TSYNC, 0, 0);
-	ASSERT_EQ(self->sibling[sib].system_tid, ret) {
-		TH_LOG("Expected the remaining thread TID to be returned");
+	ASSERT_EQ(0, ret) {
+		TH_LOG("Expected the remaining sibling to sync");
 	};
 
 	pthread_mutex_lock(&self->mutex);
@@ -1148,7 +1150,7 @@ TEST_F(TSYNC, two_siblings_not_under_filter) {
 	}
 	pthread_mutex_unlock(&self->mutex);
 	pthread_join(self->sibling[sib].tid, &status);
-	EXPECT_EQ(0xbadbeef, (long)status);
+	EXPECT_EQ(0, (long)status);
 	/* Poll for actual task death. pthread_join doesn't guarantee it. */
 	while (!kill(self->sibling[sib].system_tid, 0)) sleep(0.1);
 
