@@ -989,6 +989,7 @@ FIXTURE_TEARDOWN(TSYNC) {
 
 void *tsync_sibling(void *data)
 {
+	long ret = 0;
 	struct tsync_sibling *me = data;
 	struct __test_metadata *_metadata = me->metadata; /* enable TH_LOG */
 	me->system_tid = syscall(__NR_gettid);
@@ -996,12 +997,15 @@ void *tsync_sibling(void *data)
 	pthread_mutex_lock(me->mutex);
 	if (me->diverge) {
 		/* Just re-apply the root prog to fork the tree */
-		long ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER,
+		ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER,
 				me->prog, 0, 0);
-		if (ret)
-			return (void *)0xbadface;
 	}
 	sem_post(me->started);
+	/* Return outside of started so parent notices failures. */
+	if (ret) {
+		pthread_mutex_unlock(me->mutex);
+		return (void *)0xbadface;
+	}
 	while (me->num_waits--) pthread_cond_wait(me->cond, me->mutex);
 	pthread_mutex_unlock(me->mutex);
 	read(0, NULL, 0);
