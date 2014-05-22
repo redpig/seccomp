@@ -1006,7 +1006,11 @@ void *tsync_sibling(void *data)
 		pthread_mutex_unlock(me->mutex);
 		return (void *)0xbadface;
 	}
-	while (me->num_waits--) pthread_cond_wait(me->cond, me->mutex);
+	do {
+		pthread_cond_wait(me->cond, me->mutex);
+		me->num_waits = me->num_waits - 1;
+	}
+	while (me->num_waits);
 	pthread_mutex_unlock(me->mutex);
 	read(0, NULL, 0);
 	return (void *)0xbadbeef;
@@ -1125,13 +1129,15 @@ TEST_F(TSYNC, two_siblings_not_under_filter) {
 	sib = 1;
 	if (ret == self->sibling[0].system_tid)
 		sib = 0;
+
+	pthread_mutex_lock(&self->mutex);
+
 	/* Increment the other siblings num_waits so we can clean up
 	 * the one we just saw.
 	 */
 	self->sibling[!sib].num_waits += 1;
 
 	/* Signal the thread to clean up*/
-	pthread_mutex_lock(&self->mutex);
 	ASSERT_EQ(0, pthread_cond_broadcast(&self->cond)) {
 		TH_LOG("cond broadcast non-zero");
 	}
@@ -1149,6 +1155,12 @@ TEST_F(TSYNC, two_siblings_not_under_filter) {
 	};
 
 	pthread_mutex_lock(&self->mutex);
+
+	/* If remaining sibling didn't have a chance to wake up during
+	 * the first broadcast, manually reduce the num_waits now.
+	 */
+	if (self->sibling[sib].num_waits > 1)
+		self->sibling[sib].num_waits = 1;
 	ASSERT_EQ(0, pthread_cond_broadcast(&self->cond)) {
 		TH_LOG("cond broadcast non-zero");
 	}
