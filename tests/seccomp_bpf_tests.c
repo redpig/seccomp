@@ -732,6 +732,16 @@ TEST_F(precedence, trace_is_fourth_in_any_order) {
 #define PTRACE_O_TRACESECCOMP	0x00000080
 #endif
 
+/* Catch the Ubuntu 12.04 value error. */
+#if PTRACE_EVENT_SECCOMP != 7
+#undef PTRACE_EVENT_SECCOMP
+#endif
+
+#ifndef PTRACE_EVENT_SECCOMP
+#define PTRACE_EVENT_SECCOMP 7
+#endif
+
+#define IS_SECCOMP_EVENT(status) ((status >> 16) == PTRACE_EVENT_SECCOMP)
 bool tracer_running;
 void tracer_stop(int sig)
 {
@@ -778,6 +788,9 @@ void tracer(struct __test_metadata *_metadata, pid_t tracee,
 		if (WIFSIGNALED(status) || WIFEXITED(status))
 			/* Child is dead. Time to go. */
 			return;
+
+		/* Make sure this is a seccomp event. */
+		EXPECT_EQ(true, IS_SECCOMP_EVENT(status));
 
 		ret = ptrace(PTRACE_GETEVENTMSG, tracee, NULL, &msg);
 		EXPECT_EQ(0, ret);
