@@ -731,9 +731,23 @@ TEST_F(precedence, trace_is_fourth_in_any_order) {
 #ifndef PTRACE_O_TRACESECCOMP
 #define PTRACE_O_TRACESECCOMP	0x00000080
 #endif
+
+bool tracer_running;
+void tracer_stop(int sig)
+{
+	tracer_running = false;
+}
 void tracer(struct __test_metadata *_metadata, pid_t tracee,
 	    unsigned long poke_addr, int fd) {
 	int ret = -1;
+	struct sigaction action = {
+		.sa_handler = tracer_stop,
+	};
+
+	/* Allow external shutdown. */
+	tracer_running = true;
+	ASSERT_EQ(0, sigaction(SIGUSR1, &action, NULL));
+
 	errno = 0;
 	while (ret == -1 && errno != EINVAL) {
 		ret = ptrace(PTRACE_ATTACH, tracee, NULL, 0);
@@ -755,7 +769,8 @@ void tracer(struct __test_metadata *_metadata, pid_t tracee,
 	ASSERT_EQ(1, write(fd, "A", 1));
 	ASSERT_EQ(0, close(fd));
 
-	while (1) {
+	/* Run until we're shut down. */
+	while (tracer_running) {
 		int status;
 		unsigned long msg;
 		if (wait(&status) != tracee)
@@ -763,6 +778,7 @@ void tracer(struct __test_metadata *_metadata, pid_t tracee,
 		if (WIFSIGNALED(status) || WIFEXITED(status))
 			/* Child is dead. Time to go. */
 			return;
+
 		ret = ptrace(PTRACE_GETEVENTMSG, tracee, NULL, &msg);
 		EXPECT_EQ(0, ret);
 		/* If this fails, don't try to recover. */
@@ -779,6 +795,8 @@ void tracer(struct __test_metadata *_metadata, pid_t tracee,
 		ret = ptrace(PTRACE_CONT, tracee, NULL, NULL);
 		EXPECT_EQ(0, ret);
 	}
+	/* Directly report the status of our test harness results. */
+	syscall(__NR_exit, _metadata->passed ? EXIT_SUCCESS : EXIT_FAILURE);
 }
 
 FIXTURE_DATA(TRACE) {
@@ -830,8 +848,17 @@ FIXTURE_SETUP(TRACE) {
 }
 
 FIXTURE_TEARDOWN(TRACE) {
-	if (self->tracer)
-		kill(self->tracer, SIGKILL);
+	if (self->tracer) {
+		int status;
+		/*
+		 * Extract the exit code from the other process and
+		 * adopt it for ourselves in case its asserts failed.
+		 */
+		ASSERT_EQ(0, kill(self->tracer, SIGUSR1));
+		ASSERT_EQ(self->tracer, waitpid(self->tracer, &status, 0));
+		if (WEXITSTATUS(status))
+			_metadata->passed = 0;
+	}
 	if (self->prog.filter)
 		free(self->prog.filter);
 };
