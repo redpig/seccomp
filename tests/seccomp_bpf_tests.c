@@ -80,6 +80,9 @@ struct seccomp_data {
 
 #define syscall_arg(_n) (offsetof(struct seccomp_data, args[_n]))
 
+#define SIBLING_EXIT_UNKILLED	0xbadbeef
+#define SIBLING_EXIT_FAILURE	0xbadface
+
 TEST(mode_strict_support) {
 	long ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_STRICT, NULL, NULL, NULL);
 	ASSERT_EQ(0, ret) {
@@ -1122,7 +1125,7 @@ void *tsync_sibling(void *data)
 	/* Return outside of started so parent notices failures. */
 	if (ret) {
 		pthread_mutex_unlock(me->mutex);
-		return (void *)0xbadface;
+		return (void *)SIBLING_EXIT_FAILURE;
 	}
 	do {
 		pthread_cond_wait(me->cond, me->mutex);
@@ -1131,7 +1134,7 @@ void *tsync_sibling(void *data)
 	while (me->num_waits);
 	pthread_mutex_unlock(me->mutex);
 	read(0, NULL, 0);
-	return (void *)0xbadbeef;
+	return (void *)SIBLING_EXIT_UNKILLED;
 }
 
 void tsync_start_sibling(struct tsync_sibling *sibling)
@@ -1242,9 +1245,9 @@ TEST_F(TSYNC, two_siblings_with_one_divergence) {
 
 	/* Ensure they are both unkilled. */
 	pthread_join(self->sibling[0].tid, &status);
-	EXPECT_EQ(0xbadbeef, (long)status);
+	EXPECT_EQ(SIBLING_EXIT_UNKILLED, (long)status);
 	pthread_join(self->sibling[1].tid, &status);
-	EXPECT_EQ(0xbadbeef, (long)status);
+	EXPECT_EQ(SIBLING_EXIT_UNKILLED, (long)status);
 }
 
 TEST_F(TSYNC, two_siblings_not_under_filter) {
@@ -1292,7 +1295,7 @@ TEST_F(TSYNC, two_siblings_not_under_filter) {
 	}
 	pthread_mutex_unlock(&self->mutex);
 	pthread_join(self->sibling[sib].tid, &status);
-	EXPECT_EQ(0xbadbeef, (long)status);
+	EXPECT_EQ(SIBLING_EXIT_UNKILLED, (long)status);
 	/* Poll for actual task death. pthread_join doesn't guarantee it. */
 	while (!kill(self->sibling[sib].system_tid, 0)) sleep(0.1);
 	/* Switch to the remaining sibling */
