@@ -392,6 +392,11 @@ static struct __test_metadata *__test_list = NULL;
 static unsigned int __test_count = 0;
 static unsigned int __fixture_count = 0;
 
+/*
+ * Since constructors are called in reverse order, reverse the test
+ * list so tests are run in source declaration order.
+ * https://gcc.gnu.org/onlinedocs/gccint/Initialization.html
+ */
 static inline void __register_test(struct __test_metadata *t) {
   __test_count++;
   /* Circular linked list where only prev is circular. */
@@ -401,10 +406,10 @@ static inline void __register_test(struct __test_metadata *t) {
     t->prev = t;
     return;
   }
-  t->next = NULL;
-  t->prev = __test_list->prev;
-  t->prev->next = t;
-  __test_list->prev = t;
+  t->next = __test_list;
+  t->next->prev = t;
+  t->prev = t;
+  __test_list = t;
 }
 
 static inline int __bail(int for_realz) {
