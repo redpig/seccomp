@@ -24,6 +24,10 @@
 #include <string.h>
 #include <syscall.h>
 
+#define _GNU_SOURCE
+#include <unistd.h>
+#include <sys/syscall.h>
+
 #include "test_harness.h"
 
 #ifndef PR_SET_PTRACER
@@ -901,8 +905,37 @@ TEST_F(TRACE, getpid_runs_normally) {
 	EXPECT_EQ(0, self->poked);
 }
 
+#ifndef __NR_seccomp
+# if defined(__i386__)
+#  define __NR_seccomp 354
+# elif defined(__x86_64__)
+#  define __NR_seccomp 317
+# else
+#  define __NR_seccomp 0xffff
+# endif
+#endif
 
-TEST(pr_seccomp_ext) {
+#ifndef SECCOMP_SET_MODE_STRICT
+#define SECCOMP_SET_MODE_STRICT 0
+#endif
+
+#ifndef SECCOMP_SET_MODE_FILTER
+#define SECCOMP_SET_MODE_FILTER 1
+#endif
+
+#ifndef SECCOMP_FLAG_FILTER_TSYNC
+#define SECCOMP_FLAG_FILTER_TSYNC 1
+#endif
+
+#ifndef seccomp
+int seccomp(unsigned int op, unsigned int flags, struct sock_fprog *filter)
+{
+	errno = 0;
+	return syscall(__NR_seccomp, op, flags, filter);
+}
+#endif
+
+TEST(seccomp_syscall) {
 	struct sock_filter filter[] = {
 		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
 	};
@@ -914,22 +947,37 @@ TEST(pr_seccomp_ext) {
 	ASSERT_EQ(0, ret) {
 		TH_LOG("Kernel does not support PR_SET_NO_NEW_PRIVS!");
 	}
-	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog, 0, 0);
-	ASSERT_EQ(0, ret) {
-		TH_LOG("Kernel does not support SECCOMP_MODE_FILTER!");
-	}
-	/* No threads, so this should work. */
-	ret = prctl(PR_SECCOMP_EXT, SECCOMP_EXT_ACT, SECCOMP_EXT_ACT_TSYNC, 0, 0);
-	ASSERT_EQ(0, ret) {
-		TH_LOG("Kernel does not support SECCOMP_EXT_ACT!");
-	}
-}
 
-TEST(pr_seccomp_ext_without_seccomp) {
-	long ret = prctl(PR_SECCOMP_EXT, SECCOMP_EXT_ACT,
-			 SECCOMP_EXT_ACT_TSYNC, 0, 0);
-	ASSERT_NE(0, ret) {
-		TH_LOG("Passed unexpectedly. Was this run with a parent filter?");
+	/* Reject insane operation. */
+	ret = seccomp(-1, 0, &prog);
+	EXPECT_EQ(EINVAL, errno) {
+		TH_LOG("Did not reject crazy op value!");
+	}
+
+	/* Reject strict with flags or pointer. */
+	ret = seccomp(SECCOMP_SET_MODE_STRICT, -1, NULL);
+	EXPECT_EQ(EINVAL, errno) {
+		TH_LOG("Did not reject mode strict with flags!");
+	}
+	ret = seccomp(SECCOMP_SET_MODE_STRICT, 0, &prog);
+	EXPECT_EQ(EINVAL, errno) {
+		TH_LOG("Did not reject mode strict with uargs!");
+	}
+
+	/* Reject insane args for filter. */
+	ret = seccomp(SECCOMP_SET_MODE_FILTER, -1, &prog);
+	EXPECT_EQ(EINVAL, errno) {
+		TH_LOG("Did not reject crazy filter flags!");
+	}
+	ret = seccomp(SECCOMP_SET_MODE_FILTER, 0, NULL);
+	EXPECT_EQ(EFAULT, errno) {
+		TH_LOG("Did not reject NULL filter!");
+	}
+
+	ret = seccomp(SECCOMP_SET_MODE_FILTER, 0, &prog);
+	EXPECT_EQ(0, errno) {
+		TH_LOG("Kernel does not support SECCOMP_SET_MODE_FILTER: %s",
+			strerror(errno));
 	}
 }
 
@@ -1103,10 +1151,10 @@ TEST_F(TSYNC, siblings_fail_prctl) {
 }
 
 TEST_F(TSYNC, two_siblings_with_ancestor) {
-	long ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->root_prog, 0, 0);
+	long ret = seccomp(SECCOMP_SET_MODE_FILTER, 0, &self->root_prog);
 	void *status;
 	ASSERT_EQ(0, ret) {
-		TH_LOG("Kernel does not support SECCOMP_MODE_FILTER!");
+		TH_LOG("Kernel does not support SECCOMP_SET_MODE_FILTER!");
 	}
 	tsync_start_sibling(&self->sibling[0]);
 	tsync_start_sibling(&self->sibling[1]);
@@ -1116,14 +1164,10 @@ TEST_F(TSYNC, two_siblings_with_ancestor) {
 		self->sibling_count++;
 	}
 
-	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->apply_prog, 0, 0);
+	ret = seccomp(SECCOMP_SET_MODE_FILTER, SECCOMP_FLAG_FILTER_TSYNC,
+		      &self->apply_prog);
 	ASSERT_EQ(0, ret) {
-		TH_LOG("Failed to install second filter.");
-	}
-
-	ret = prctl(PR_SECCOMP_EXT, SECCOMP_EXT_ACT, SECCOMP_EXT_ACT_TSYNC, 0, 0);
-	ASSERT_EQ(0, ret) {
-		TH_LOG("Could not move all threads!");
+		TH_LOG("Could install filter on all threads!");
 	}
 	/* Tell the siblings to test the policy */
 	pthread_mutex_lock(&self->mutex);
@@ -1139,10 +1183,10 @@ TEST_F(TSYNC, two_siblings_with_ancestor) {
 }
 
 TEST_F(TSYNC, two_siblings_with_one_divergence) {
-	long ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->root_prog, 0, 0);
+	long ret = seccomp(SECCOMP_SET_MODE_FILTER, 0, &self->root_prog);
 	void *status;
 	ASSERT_EQ(0, ret) {
-		TH_LOG("Kernel does not support SECCOMP_MODE_FILTER!");
+		TH_LOG("Kernel does not support SECCOMP_SET_MODE_FILTER!");
 	}
 	self->sibling[0].diverge = 1;
 	tsync_start_sibling(&self->sibling[0]);
@@ -1153,13 +1197,11 @@ TEST_F(TSYNC, two_siblings_with_one_divergence) {
 		self->sibling_count++;
 	}
 
-	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->apply_prog, 0, 0);
-	ASSERT_EQ(0, ret) {
-		TH_LOG("Failed to install second filter.");
+	ret = seccomp(SECCOMP_SET_MODE_FILTER, SECCOMP_FLAG_FILTER_TSYNC,
+		      &self->apply_prog);
+	ASSERT_EQ(self->sibling[0].system_tid, ret) {
+		TH_LOG("Did not fail on diverged sibling.");
 	}
-
-	ret = prctl(PR_SECCOMP_EXT, SECCOMP_EXT_ACT, SECCOMP_EXT_ACT_TSYNC, 0, 0);
-	ASSERT_EQ(self->sibling[0].system_tid, ret);
 
 	/* Wake the threads */
 	pthread_mutex_lock(&self->mutex);
@@ -1168,11 +1210,11 @@ TEST_F(TSYNC, two_siblings_with_one_divergence) {
 	}
 	pthread_mutex_unlock(&self->mutex);
 
-	/* Ensure they are both killed and don't exit cleanly. */
+	/* Ensure they are both unkilled. */
 	pthread_join(self->sibling[0].tid, &status);
 	EXPECT_EQ(0xbadbeef, (long)status);
 	pthread_join(self->sibling[1].tid, &status);
-	EXPECT_EQ(0x0, (long)status);
+	EXPECT_EQ(0xbadbeef, (long)status);
 }
 
 TEST_F(TSYNC, two_siblings_not_under_filter) {
@@ -1193,17 +1235,13 @@ TEST_F(TSYNC, two_siblings_not_under_filter) {
 		self->sibling_count++;
 	}
 
-	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->root_prog, 0, 0);
+	ret = seccomp(SECCOMP_SET_MODE_FILTER, 0, &self->root_prog);
 	ASSERT_EQ(0, ret) {
-		TH_LOG("Kernel does not support SECCOMP_MODE_FILTER!");
+		TH_LOG("Kernel does not support SECCOMP_SET_MODE_FILTER!");
 	}
 
-	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->apply_prog, 0, 0);
-	ASSERT_EQ(0, ret) {
-		TH_LOG("Failed to install second filter.");
-	}
-
-	ret = prctl(PR_SECCOMP_EXT, SECCOMP_EXT_ACT, SECCOMP_EXT_ACT_TSYNC, 0, 0);
+	ret = seccomp(SECCOMP_SET_MODE_FILTER, SECCOMP_FLAG_FILTER_TSYNC,
+		      &self->apply_prog);
 	ASSERT_EQ(ret, self->sibling[0].system_tid) {
 		TH_LOG("Did not fail on diverged sibling.");
 	}
@@ -1230,7 +1268,8 @@ TEST_F(TSYNC, two_siblings_not_under_filter) {
 	/* Switch to the remaining sibling */
 	sib = !sib;
 
-	ret = prctl(PR_SECCOMP_EXT, SECCOMP_EXT_ACT, SECCOMP_EXT_ACT_TSYNC, 0, 0);
+	ret = seccomp(SECCOMP_SET_MODE_FILTER, SECCOMP_FLAG_FILTER_TSYNC,
+		      &self->apply_prog);
 	ASSERT_EQ(0, ret) {
 		TH_LOG("Expected the remaining sibling to sync");
 	};
@@ -1251,7 +1290,8 @@ TEST_F(TSYNC, two_siblings_not_under_filter) {
 	/* Poll for actual task death. pthread_join doesn't guarantee it. */
 	while (!kill(self->sibling[sib].system_tid, 0)) sleep(0.1);
 
-	ret = prctl(PR_SECCOMP_EXT, SECCOMP_EXT_ACT, SECCOMP_EXT_ACT_TSYNC, 0, 0);
+	ret = seccomp(SECCOMP_SET_MODE_FILTER, SECCOMP_FLAG_FILTER_TSYNC,
+		      &self->apply_prog);
 	ASSERT_EQ(0, ret);  /* just us chickens */
 }
 
