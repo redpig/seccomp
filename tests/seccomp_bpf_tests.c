@@ -981,6 +981,36 @@ TEST(seccomp_syscall) {
 	}
 }
 
+TEST(seccomp_syscall_mode_lock) {
+	struct sock_filter filter[] = {
+		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
+	};
+	struct sock_fprog prog = {
+		.len = (unsigned short)(sizeof(filter)/sizeof(filter[0])),
+		.filter = filter,
+	};
+	long ret = prctl(PR_SET_NO_NEW_PRIVS, 1, NULL, 0, 0);
+	ASSERT_EQ(0, ret) {
+		TH_LOG("Kernel does not support PR_SET_NO_NEW_PRIVS!");
+	}
+
+	ret = seccomp(SECCOMP_SET_MODE_FILTER, 0, &prog);
+	EXPECT_EQ(0, ret) {
+		TH_LOG("Could not install filter!");
+	}
+
+	/* Make sure neither entry point will switch to strict. */
+	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_STRICT, 0, 0, 0);
+	EXPECT_EQ(EINVAL, errno) {
+		TH_LOG("Switched to mode strict!");
+	}
+
+	ret = seccomp(SECCOMP_SET_MODE_STRICT, 0, NULL);
+	EXPECT_EQ(EINVAL, errno) {
+		TH_LOG("Switched to mode strict!");
+	}
+}
+
 #define TSYNC_SIBLINGS 2
 struct tsync_sibling {
 	pthread_t tid;
