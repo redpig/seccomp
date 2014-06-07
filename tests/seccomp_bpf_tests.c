@@ -1021,6 +1021,47 @@ void tsync_start_sibling(struct tsync_sibling *sibling)
 	pthread_create(&sibling->tid, NULL, tsync_sibling, (void *)sibling);
 }
 
+TEST_F(TSYNC, siblings_fail_prctl) {
+	long ret, sib;
+	void *status;
+	struct sock_filter filter[] = {
+		BPF_STMT(BPF_LD+BPF_W+BPF_ABS,
+			offsetof(struct seccomp_data, nr)),
+		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_prctl, 0, 1),
+		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ERRNO | EINVAL),
+		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
+	};
+	struct sock_fprog prog = {
+		.len = (unsigned short)(sizeof(filter)/sizeof(filter[0])),
+		.filter = filter,
+	};
+
+	/* Check prctl failure detection by requesting sib 0 diverge. */
+	ret = seccomp(SECCOMP_SET_MODE_FILTER, 0, &prog);
+
+	self->sibling[0].diverge = 1;
+	tsync_start_sibling(&self->sibling[0]);
+	tsync_start_sibling(&self->sibling[1]);
+
+	while (self->sibling_count < TSYNC_SIBLINGS) {
+		sem_wait(&self->started);
+		self->sibling_count++;
+	}
+
+	/* Signal the threads to clean up*/
+	pthread_mutex_lock(&self->mutex);
+	ASSERT_EQ(0, pthread_cond_broadcast(&self->cond)) {
+		TH_LOG("cond broadcast non-zero");
+	}
+	pthread_mutex_unlock(&self->mutex);
+
+	/* Ensure diverging sibling failed to call prctl. */
+	pthread_join(self->sibling[0].tid, &status);
+	EXPECT_EQ(SIBLING_EXIT_FAILURE, (long)status);
+	pthread_join(self->sibling[1].tid, &status);
+	EXPECT_EQ(SIBLING_EXIT_UNKILLED, (long)status);
+}
+
 TEST_F(TSYNC, two_siblings_with_ancestor) {
 	long ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->root_prog, 0, 0);
 	void *status;
