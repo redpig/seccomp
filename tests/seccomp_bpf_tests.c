@@ -788,7 +788,7 @@ void tracer(struct __test_metadata *_metadata, pid_t tracee,
 	ASSERT_EQ(1, write(fd, "A", 1));
 	ASSERT_EQ(0, close(fd));
 
-	/* Run until we're shut down. */
+	/* Run until we're shut down. Must assert to stop execution. */
 	while (tracer_running) {
 		int status;
 		unsigned long msg;
@@ -799,7 +799,7 @@ void tracer(struct __test_metadata *_metadata, pid_t tracee,
 			return;
 
 		/* Make sure this is a seccomp event. */
-		EXPECT_EQ(true, IS_SECCOMP_EVENT(status));
+		ASSERT_EQ(true, IS_SECCOMP_EVENT(status));
 
 		ret = ptrace(PTRACE_GETEVENTMSG, tracee, NULL, &msg);
 		EXPECT_EQ(0, ret);
@@ -815,7 +815,7 @@ void tracer(struct __test_metadata *_metadata, pid_t tracee,
 		ret = ptrace(PTRACE_POKEDATA, tracee, poke_addr, 0x1001);
 		EXPECT_EQ(0, ret);
 		ret = ptrace(PTRACE_CONT, tracee, NULL, NULL);
-		EXPECT_EQ(0, ret);
+		ASSERT_EQ(0, ret);
 	}
 	/* Directly report the status of our test harness results. */
 	syscall(__NR_exit, _metadata->passed ? EXIT_SUCCESS : EXIT_FAILURE);
