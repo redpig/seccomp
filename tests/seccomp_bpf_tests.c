@@ -756,8 +756,12 @@ void tracer_stop(int sig)
 {
 	tracer_running = false;
 }
-void tracer(struct __test_metadata *_metadata, pid_t tracee,
-	    unsigned long poke_addr, int fd) {
+
+typedef void tracer_func_t(struct __test_metadata *_metadata,
+			   pid_t tracee, int status, void *args);
+
+void tracer(struct __test_metadata *_metadata, int fd, pid_t tracee,
+	    tracer_func_t tracer_func, void *args) {
 	int ret = -1;
 	struct sigaction action = {
 		.sa_handler = tracer_stop,
@@ -791,7 +795,6 @@ void tracer(struct __test_metadata *_metadata, pid_t tracee,
 	/* Run until we're shut down. Must assert to stop execution. */
 	while (tracer_running) {
 		int status;
-		unsigned long msg;
 		if (wait(&status) != tracee)
 			continue;
 		if (WIFSIGNALED(status) || WIFEXITED(status))
@@ -801,19 +804,8 @@ void tracer(struct __test_metadata *_metadata, pid_t tracee,
 		/* Make sure this is a seccomp event. */
 		ASSERT_EQ(true, IS_SECCOMP_EVENT(status));
 
-		ret = ptrace(PTRACE_GETEVENTMSG, tracee, NULL, &msg);
-		EXPECT_EQ(0, ret);
-		/* If this fails, don't try to recover. */
-		ASSERT_EQ(0x1001, msg) {
-			kill(tracee, SIGKILL);
-		}
-		/*
-		 * Poke in the message.
-		 * Registers are not touched to try to keep this relatively arch
-		 * agnostic.
-		 */
-		ret = ptrace(PTRACE_POKEDATA, tracee, poke_addr, 0x1001);
-		EXPECT_EQ(0, ret);
+		tracer_func(_metadata, tracee, status, args);
+
 		ret = ptrace(PTRACE_CONT, tracee, NULL, NULL);
 		ASSERT_EQ(0, ret);
 	}
@@ -821,34 +813,15 @@ void tracer(struct __test_metadata *_metadata, pid_t tracee,
 	syscall(__NR_exit, _metadata->passed ? EXIT_SUCCESS : EXIT_FAILURE);
 }
 
-FIXTURE_DATA(TRACE) {
-	struct sock_fprog prog;
-	pid_t tracer;
-	long poked;
-};
-
+/* Common tracer setup/teardown functions. */
 void cont_handler(int num) {
 }
-
-FIXTURE_SETUP(TRACE) {
-	struct sock_filter filter[] = {
-		BPF_STMT(BPF_LD+BPF_W+BPF_ABS,
-			offsetof(struct seccomp_data, nr)),
-		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_read, 0, 1),
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_TRACE | 0x1001),
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
-	};
-	int pipefd[2];
+pid_t setup_trace_fixture(struct __test_metadata *_metadata,
+			  tracer_func_t func, void *args) {
 	char sync;
+	int pipefd[2];
 	pid_t tracer_pid;
 	pid_t tracee = getpid();
-	unsigned long poke_addr = (unsigned long)&self->poked;
-	self->poked = 0;
-	memset(&self->prog, 0, sizeof(self->prog));
-	self->prog.filter = malloc(sizeof(filter));
-	ASSERT_NE(NULL, self->prog.filter);
-	memcpy(self->prog.filter, filter, sizeof(filter));
-	self->prog.len = (unsigned short)(sizeof(filter)/sizeof(filter[0]));
 
 	/* Setup a pipe for clean synchronization. */
 	ASSERT_EQ(0, pipe(pipefd));
@@ -859,33 +832,95 @@ FIXTURE_SETUP(TRACE) {
 	signal(SIGALRM, cont_handler);
 	if (tracer_pid == 0) {
 		close(pipefd[0]);
-		tracer(_metadata, tracee, poke_addr, pipefd[1]);
+		tracer(_metadata, pipefd[1], tracee, func, args);
 		syscall(__NR_exit, 0);
 	}
 	close(pipefd[1]);
-	self->tracer = tracer_pid;
-	prctl(PR_SET_PTRACER, self->tracer, 0, 0, 0);
+	prctl(PR_SET_PTRACER, tracer_pid, 0, 0, 0);
 	read(pipefd[0], &sync, 1);
 	close(pipefd[0]);
-}
 
-FIXTURE_TEARDOWN(TRACE) {
-	if (self->tracer) {
+	return tracer_pid;
+}
+void teardown_trace_fixture(struct __test_metadata *_metadata,
+			    pid_t tracer) {
+	if (tracer) {
 		int status;
 		/*
 		 * Extract the exit code from the other process and
 		 * adopt it for ourselves in case its asserts failed.
 		 */
-		ASSERT_EQ(0, kill(self->tracer, SIGUSR1));
-		ASSERT_EQ(self->tracer, waitpid(self->tracer, &status, 0));
+		ASSERT_EQ(0, kill(tracer, SIGUSR1));
+		ASSERT_EQ(tracer, waitpid(tracer, &status, 0));
 		if (WEXITSTATUS(status))
 			_metadata->passed = 0;
 	}
+}
+
+/* "poke" tracer arguments and function. */
+struct tracer_args_poke_t {
+	unsigned long poke_addr;
+};
+
+void tracer_poke(struct __test_metadata *_metadata, pid_t tracee, int status,
+		 void *args) {
+	int ret;
+	unsigned long msg;
+	struct tracer_args_poke_t *info = (struct tracer_args_poke_t *)args;
+
+	ret = ptrace(PTRACE_GETEVENTMSG, tracee, NULL, &msg);
+	EXPECT_EQ(0, ret);
+	/* If this fails, don't try to recover. */
+	ASSERT_EQ(0x1001, msg) {
+		kill(tracee, SIGKILL);
+	}
+	/*
+	 * Poke in the message.
+	 * Registers are not touched to try to keep this relatively arch
+	 * agnostic.
+	 */
+	ret = ptrace(PTRACE_POKEDATA, tracee, info->poke_addr, 0x1001);
+	EXPECT_EQ(0, ret);
+}
+
+FIXTURE_DATA(TRACE_poke) {
+	struct sock_fprog prog;
+	pid_t tracer;
+	long poked;
+	struct tracer_args_poke_t tracer_args;
+};
+
+FIXTURE_SETUP(TRACE_poke) {
+	struct sock_filter filter[] = {
+		BPF_STMT(BPF_LD+BPF_W+BPF_ABS,
+			offsetof(struct seccomp_data, nr)),
+		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_read, 0, 1),
+		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_TRACE | 0x1001),
+		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
+	};
+
+	self->poked = 0;
+	memset(&self->prog, 0, sizeof(self->prog));
+	self->prog.filter = malloc(sizeof(filter));
+	ASSERT_NE(NULL, self->prog.filter);
+	memcpy(self->prog.filter, filter, sizeof(filter));
+	self->prog.len = (unsigned short)(sizeof(filter)/sizeof(filter[0]));
+
+	/* Set up tracer args. */
+	self->tracer_args.poke_addr = (unsigned long)&self->poked;
+
+	/* Launch tracer. */
+	self->tracer = setup_trace_fixture(_metadata, tracer_poke,
+					   &self->tracer_args);
+}
+
+FIXTURE_TEARDOWN(TRACE_poke) {
+	teardown_trace_fixture(_metadata, self->tracer);
 	if (self->prog.filter)
 		free(self->prog.filter);
 };
 
-TEST_F(TRACE, read_has_side_effects) {
+TEST_F(TRACE_poke, read_has_side_effects) {
 	ssize_t ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
 	ASSERT_EQ(0, ret);
 
@@ -898,7 +933,7 @@ TEST_F(TRACE, read_has_side_effects) {
 	EXPECT_EQ(0x1001, self->poked);
 }
 
-TEST_F(TRACE, getpid_runs_normally) {
+TEST_F(TRACE_poke, getpid_runs_normally) {
 	long ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
 	ASSERT_EQ(0, ret);
 
