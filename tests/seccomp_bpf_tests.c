@@ -15,6 +15,7 @@
 #include <linux/filter.h>
 #include <sys/prctl.h>
 #include <sys/ptrace.h>
+#include <sys/user.h>
 #include <linux/prctl.h>
 #include <linux/ptrace.h>
 #include <linux/seccomp.h>
@@ -943,6 +944,178 @@ TEST_F(TRACE_poke, getpid_runs_normally) {
 	EXPECT_EQ(0, self->poked);
 	EXPECT_NE(0, syscall(__NR_getpid));
 	EXPECT_EQ(0, self->poked);
+}
+
+/* Architecture-specific syscall changing routines. */
+void change_syscall(struct __test_metadata *_metadata,
+		    pid_t tracee, int syscall) {
+	int ret;
+#if defined(__x86_64__) || defined(__i386__)
+	struct user_regs_struct regs;
+#elif __arm__
+	struct pt_regs regs;
+#else
+# error "What is the name of your architecture's CPU register set?"
+#endif
+
+	ret = ptrace(PTRACE_GETREGS, tracee, NULL, &regs);
+	EXPECT_EQ(0, ret);
+
+#if defined(__x86_64__) || defined(__i386__)
+# ifdef __x86_64__
+#  define SYSCALL_REG orig_rax
+#  define SYSCALL_RET rax
+# else
+#  define SYSCALL_REG orig_ax
+#  define SYSCALL_RET ax
+# endif
+	{
+		regs.SYSCALL_REG = syscall;
+	}
+
+#elif __arm__
+# define SYSCALL_RET ARM_r0
+# ifndef PTRACE_SET_SYSCALL
+#  define PTRACE_SET_SYSCALL   23
+# endif
+	{
+		ret = ptrace(PTRACE_SET_SYSCALL, tracee, NULL, syscall);
+		EXPECT_EQ(0, ret);
+	}
+
+#else
+	ASSERT_EQ(1, 0) {
+		TH_LOG("How is the syscall changed on this architecture?");
+	}
+#endif
+
+	/* If syscall is skipped, change return value. */
+	if (syscall == -1)
+		regs.SYSCALL_RET = 1;
+
+	ret = ptrace(PTRACE_SETREGS, tracee, NULL, &regs);
+	EXPECT_EQ(0, ret);
+}
+
+void tracer_syscall(struct __test_metadata *_metadata, pid_t tracee,
+		    int status, void *args) {
+	int ret;
+	unsigned long msg;
+
+	/* Make sure we got the right message. */
+	ret = ptrace(PTRACE_GETEVENTMSG, tracee, NULL, &msg);
+	EXPECT_EQ(0, ret);
+
+	switch (msg) {
+	case 0x1002:
+		/* change getpid to getppid. */
+		change_syscall(_metadata, tracee, __NR_getppid);
+		break;
+	case 0x1003:
+		/* skip gettid. */
+		change_syscall(_metadata, tracee, -1);
+		break;
+	case 0x1004:
+		/* do nothing (allow getppid) */
+		break;
+	default:
+		EXPECT_EQ(0, msg) {
+			TH_LOG("Unknown PTRACE_GETEVENTMSG: 0x%lx", msg);
+			kill(tracee, SIGKILL);
+		}
+	}
+
+}
+
+FIXTURE_DATA(TRACE_syscall) {
+	struct sock_fprog prog;
+	pid_t tracer, mytid, mypid, parent;
+};
+
+FIXTURE_SETUP(TRACE_syscall) {
+	struct sock_filter filter[] = {
+		BPF_STMT(BPF_LD+BPF_W+BPF_ABS,
+			offsetof(struct seccomp_data, nr)),
+		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_getpid, 0, 1),
+		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_TRACE | 0x1002),
+		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_gettid, 0, 1),
+		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_TRACE | 0x1003),
+		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_getppid, 0, 1),
+		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_TRACE | 0x1004),
+		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
+	};
+
+	memset(&self->prog, 0, sizeof(self->prog));
+	self->prog.filter = malloc(sizeof(filter));
+	ASSERT_NE(NULL, self->prog.filter);
+	memcpy(self->prog.filter, filter, sizeof(filter));
+	self->prog.len = (unsigned short)(sizeof(filter)/sizeof(filter[0]));
+
+	/* Prepare some testable syscall results. */
+	self->mytid = syscall(__NR_gettid);
+	ASSERT_GT(self->mytid, 0);
+	ASSERT_NE(self->mytid, 1) {
+		TH_LOG("Running this test as init is not supported. :)");
+	}
+
+	self->mypid = getpid();
+	ASSERT_GT(self->mypid, 0);
+	ASSERT_EQ(self->mytid, self->mypid);
+
+	self->parent = getppid();
+	ASSERT_GT(self->parent, 0);
+	ASSERT_NE(self->parent, self->mypid);
+
+	/* Launch tracer. */
+	self->tracer = setup_trace_fixture(_metadata, tracer_syscall, NULL);
+}
+
+FIXTURE_TEARDOWN(TRACE_syscall) {
+	teardown_trace_fixture(_metadata, self->tracer);
+	if (self->prog.filter)
+		free(self->prog.filter);
+};
+
+TEST_F(TRACE_syscall, syscall_allowed) {
+	long ret;
+
+	ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+	ASSERT_EQ(0, ret);
+
+	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->prog, 0, 0);
+	ASSERT_EQ(0, ret);
+
+	/* getppid works as expected (no changes). */
+	EXPECT_EQ(self->parent, syscall(__NR_getppid));
+	EXPECT_NE(self->mypid, syscall(__NR_getppid));
+}
+
+TEST_F(TRACE_syscall, syscall_redirected) {
+	long ret;
+
+	ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+	ASSERT_EQ(0, ret);
+
+	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->prog, 0, 0);
+	ASSERT_EQ(0, ret);
+
+	/* getpid has been redirected to getppid as expected. */
+	EXPECT_EQ(self->parent, syscall(__NR_getpid));
+	EXPECT_NE(self->mypid, syscall(__NR_getpid));
+}
+
+TEST_F(TRACE_syscall, syscall_dropped) {
+	long ret;
+
+	ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+	ASSERT_EQ(0, ret);
+
+	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->prog, 0, 0);
+	ASSERT_EQ(0, ret);
+
+	/* gettid has been skipped and an altered return value stored. */
+	EXPECT_EQ(1, syscall(__NR_gettid));
+	EXPECT_NE(self->mytid, syscall(__NR_gettid));
 }
 
 #ifndef __NR_seccomp
