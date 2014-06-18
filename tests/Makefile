@@ -1,3 +1,4 @@
+CFLAGS += -Wall
 EXEC=resumption seccomp_bpf_tests sigsegv
 
 all: $(EXEC)

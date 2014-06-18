@@ -13,6 +13,8 @@
 
 #include <errno.h>
 #include <linux/filter.h>
+#include <sys/prctl.h>
+#include <sys/ptrace.h>
 #include <linux/prctl.h>
 #include <linux/ptrace.h>
 #include <linux/seccomp.h>
@@ -1112,7 +1114,6 @@ void *tsync_sibling(void *data)
 {
 	long ret = 0;
 	struct tsync_sibling *me = data;
-	struct __test_metadata *_metadata = me->metadata; /* enable TH_LOG */
 	me->system_tid = syscall(__NR_gettid);
 
 	pthread_mutex_lock(me->mutex);
@@ -1143,7 +1144,7 @@ void tsync_start_sibling(struct tsync_sibling *sibling)
 }
 
 TEST_F(TSYNC, siblings_fail_prctl) {
-	long ret, sib;
+	long ret;
 	void *status;
 	struct sock_filter filter[] = {
 		BPF_STMT(BPF_LD+BPF_W+BPF_ABS,
@@ -1159,6 +1160,9 @@ TEST_F(TSYNC, siblings_fail_prctl) {
 
 	/* Check prctl failure detection by requesting sib 0 diverge. */
 	ret = seccomp(SECCOMP_SET_MODE_FILTER, 0, &prog);
+	ASSERT_EQ(0, ret) {
+		TH_LOG("setting filter failed");
+	}
 
 	self->sibling[0].diverge = 1;
 	tsync_start_sibling(&self->sibling[0]);

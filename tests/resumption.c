@@ -12,6 +12,7 @@
 #define __have_sigevent_t 1
 
 #include <linux/filter.h>
+#include <sys/prctl.h>
 #include <linux/prctl.h>
 #include <linux/seccomp.h>
 #include <stddef.h>
@@ -69,7 +70,7 @@ static void syscall_thunk(void)
 static time_t vsyscall_time(time_t *p)
 {
 	register time_t t asm ("rax");
-	register time_t *p1 asm ("rdi") = p;
+	__attribute__((unused)) register time_t *p1 asm ("rdi") = p;
 	__asm__("call 0xffffffffff600400 \n");
 	return t;
 }
