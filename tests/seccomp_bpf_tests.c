@@ -150,6 +150,83 @@ TEST(mode_filter_without_nnp) {
 	}
 }
 
+#define MAX_INSNS_PER_PATH 32768
+
+TEST(filter_size_limits) {
+	int i;
+	int count = BPF_MAXINSNS + 1;
+	struct sock_filter allow[] = {
+		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
+	};
+	struct sock_filter *filter;
+	struct sock_fprog prog = { };
+
+	filter = calloc(count, sizeof(*filter));
+	ASSERT_NE(NULL, filter);
+
+	for (i = 0; i < count; i++) {
+		filter[i] = allow[0];
+	}
+
+	long ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+	ASSERT_EQ(0, ret);
+
+	prog.filter = filter;
+	prog.len = count;
+
+	/* Too many filter instructions in a single filter. */
+	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog, 0, 0);
+	ASSERT_NE(0, ret) {
+		TH_LOG("Installing %d insn filter was allowed", prog.len);
+	}
+
+	/* One less is okay, though. */
+	prog.len -= 1;
+	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog, 0, 0);
+	ASSERT_EQ(0, ret) {
+		TH_LOG("Installing %d insn filter wasn't allowed", prog.len);
+	}
+}
+
+TEST(filter_chain_limits) {
+	int i;
+	int count = BPF_MAXINSNS;
+	struct sock_filter allow[] = {
+		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
+	};
+	struct sock_filter *filter;
+	struct sock_fprog prog = { };
+
+	filter = calloc(count, sizeof(*filter));
+	ASSERT_NE(NULL, filter);
+
+	for (i = 0; i < count; i++) {
+		filter[i] = allow[0];
+	}
+
+	long ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+	ASSERT_EQ(0, ret);
+
+	prog.filter = filter;
+	prog.len = 1;
+
+	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog, 0, 0);
+	ASSERT_EQ(0, ret);
+
+	prog.len = count;
+
+	/* Too many total filter instructions. */
+	for (i = 0; i < MAX_INSNS_PER_PATH; i++) {
+		ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog, 0, 0);
+		if (ret != 0)
+			break;
+	}
+	ASSERT_NE(0, ret) {
+		TH_LOG("Allowed %d %d-insn filters (total with penalties:%d)",
+		       i, count, i * (count + 4));
+	}
+}
+
 TEST(mode_filter_cannot_move_to_strict) {
 	struct sock_filter filter[] = {
 		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
