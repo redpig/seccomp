@@ -15,6 +15,7 @@
 #define __have_sigevent_t 1
 
 #include <linux/filter.h>
+#include <sys/prctl.h>
 #include <linux/prctl.h>
 #include <linux/seccomp.h>
 #include <limits.h>
@@ -104,9 +105,9 @@ struct arch_sigsys {
 static long local_mprotect(void *target, unsigned long sz)
 {
 	register unsigned long res asm ("rax") = __NR_mprotect;
-	register void *addr asm ("rdi") = ALIGN(target, sz);
-	register long len asm ("rsi") = sz;
-	register long num asm ("rdx") = PROT_NONE;
+	__attribute__((unused)) register void *addr asm ("rdi") = ALIGN(target, sz);
+	__attribute__((unused)) register long len asm ("rsi") = sz;
+	__attribute__((unused)) register long num asm ("rdx") = PROT_NONE;
 	__asm__("syscall\n");
 	return res;
 }
@@ -116,7 +117,6 @@ static void TRAP_action(int nr, siginfo_t *info, void *void_context)
 	ucontext_t *ctx = (ucontext_t *)void_context;
 	char buf[256];
 	int len;
-	int do_ret = 1;
 	struct arch_sigsys *sys = (struct arch_sigsys *)
 #ifdef si_syscall
 		&(info->si_call_addr);
@@ -150,7 +150,6 @@ static void TRAP_action(int nr, siginfo_t *info, void *void_context)
 TEST_F_SIGNAL(TRAP, sigsegv, SIGSEGV) {
 	int ret;
 	struct sigaction act;
-	pid_t pid;
 	sigset_t mask;
 	memset(&act, 0, sizeof(act));
 	sigemptyset(&mask);
@@ -166,9 +165,6 @@ TEST_F_SIGNAL(TRAP, sigsegv, SIGSEGV) {
 	ASSERT_EQ(0, ret) {
 		TH_LOG("sigprocmask failed");
 	}
-
-	/* Get the pid to compare against. */
-	pid = getpid();
 
 	ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
 	ASSERT_EQ(0, ret);
