@@ -288,6 +288,10 @@
 
 /* Exports a simple wrapper to run the test harness. */
 #define _TEST_HARNESS_MAIN \
+  static void __attribute__((constructor)) __constructor_order_last(void) { \
+    if (!__constructor_order) \
+      __constructor_order = _CONSTRUCTOR_ORDER_BACKWARD; \
+  } \
   int main(int argc, char **argv) { return test_harness_run(argc, argv); }
 
 #define _ASSERT_EQ(_expected, _seen) \
@@ -391,11 +395,19 @@ struct __test_metadata {
 static struct __test_metadata *__test_list = NULL;
 static unsigned int __test_count = 0;
 static unsigned int __fixture_count = 0;
+static int __constructor_order = 0;
+
+#define _CONSTRUCTOR_ORDER_FORWARD   1
+#define _CONSTRUCTOR_ORDER_BACKWARD -1
 
 /*
  * Since constructors are called in reverse order, reverse the test
  * list so tests are run in source declaration order.
  * https://gcc.gnu.org/onlinedocs/gccint/Initialization.html
+ * However, it seems not all toolchains do this correctly, so use
+ * __constructor_order to detect which direction is called first
+ * and adjust list building logic to get things running in the right
+ * direction.
  */
 static inline void __register_test(struct __test_metadata *t) {
   __test_count++;
@@ -406,10 +418,17 @@ static inline void __register_test(struct __test_metadata *t) {
     t->prev = t;
     return;
   }
-  t->next = __test_list;
-  t->next->prev = t;
-  t->prev = t;
-  __test_list = t;
+  if (__constructor_order == _CONSTRUCTOR_ORDER_FORWARD) {
+    t->next = NULL;
+    t->prev = __test_list->prev;
+    t->prev->next = t;
+    __test_list->prev = t;
+  } else {
+    t->next = __test_list;
+    t->next->prev = t;
+    t->prev = t;
+    __test_list = t;
+  }
 }
 
 static inline int __bail(int for_realz) {
@@ -484,6 +503,11 @@ static int test_harness_run(int __attribute__((unused)) argc,
   printf("[==========] %u / %u tests passed.\n", pass_count, count);
   printf("[  %s  ]\n", (ret ? "FAILED" : "PASSED"));
   return ret;
+}
+
+static void __attribute__((constructor)) __constructor_order_first(void) {
+  if (!__constructor_order)
+    __constructor_order = _CONSTRUCTOR_ORDER_FORWARD;
 }
 
 #endif  /* TEST_HARNESS_H_ */
