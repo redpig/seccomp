@@ -1200,7 +1200,10 @@ TEST_F(TRACE_syscall, syscall_dropped) {
 #  define __NR_seccomp 354
 # elif defined(__x86_64__)
 #  define __NR_seccomp 317
+# elif defined(__arm__)
+#  define __NR_seccomp 383
 # else
+#  warning "seccomp syscall number unknown for this architecture"
 #  define __NR_seccomp 0xffff
 # endif
 #endif
