@@ -1304,6 +1304,26 @@ TEST(seccomp_syscall_mode_lock) {
 	}
 }
 
+TEST(TSYNC_first) {
+	struct sock_filter filter[] = {
+		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
+	};
+	struct sock_fprog prog = {
+		.len = (unsigned short)(sizeof(filter)/sizeof(filter[0])),
+		.filter = filter,
+	};
+	long ret = prctl(PR_SET_NO_NEW_PRIVS, 1, NULL, 0, 0);
+	ASSERT_EQ(0, ret) {
+		TH_LOG("Kernel does not support PR_SET_NO_NEW_PRIVS!");
+	}
+
+	ret = seccomp(SECCOMP_SET_MODE_FILTER, SECCOMP_FLAG_FILTER_TSYNC,
+		      &prog);
+	EXPECT_EQ(0, ret) {
+		TH_LOG("Could not install initial filter with TSYNC!");
+	}
+}
+
 #define TSYNC_SIBLINGS 2
 struct tsync_sibling {
 	pthread_t tid;
