@@ -85,6 +85,7 @@ struct seccomp_data {
 
 #define SIBLING_EXIT_UNKILLED	0xbadbeef
 #define SIBLING_EXIT_FAILURE	0xbadface
+#define SIBLING_EXIT_NEWPRIVS	0xbadfeed
 
 TEST(mode_strict_support) {
 	long ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_STRICT, NULL, NULL, NULL);
@@ -1413,10 +1414,6 @@ FIXTURE_SETUP(TSYNC) {
 	self->sibling[1].prog = &self->root_prog;
 	self->sibling[1].num_waits = 1;
 	self->sibling[1].metadata = _metadata;
-
-	ASSERT_EQ(0, prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)) {
-		TH_LOG("Kernel does not support PR_SET_NO_NEW_PRIVS!");
-	}
 }
 
 FIXTURE_TEARDOWN(TSYNC) {
@@ -1465,6 +1462,9 @@ void *tsync_sibling(void *data)
 	}
 	while (me->num_waits);
 	pthread_mutex_unlock(me->mutex);
+	long nnp = prctl(PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0);
+	if (!nnp)
+		return (void*)SIBLING_EXIT_NEWPRIVS;
 	read(0, NULL, 0);
 	return (void *)SIBLING_EXIT_UNKILLED;
 }
@@ -1488,6 +1488,10 @@ TEST_F(TSYNC, siblings_fail_prctl) {
 		.len = (unsigned short)(sizeof(filter)/sizeof(filter[0])),
 		.filter = filter,
 	};
+
+	ASSERT_EQ(0, prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)) {
+		TH_LOG("Kernel does not support PR_SET_NO_NEW_PRIVS!");
+	}
 
 	/* Check prctl failure detection by requesting sib 0 diverge. */
 	ret = seccomp(SECCOMP_SET_MODE_FILTER, 0, &prog);
@@ -1519,8 +1523,14 @@ TEST_F(TSYNC, siblings_fail_prctl) {
 }
 
 TEST_F(TSYNC, two_siblings_with_ancestor) {
-	long ret = seccomp(SECCOMP_SET_MODE_FILTER, 0, &self->root_prog);
+	long ret;
 	void *status;
+
+	ASSERT_EQ(0, prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)) {
+		TH_LOG("Kernel does not support PR_SET_NO_NEW_PRIVS!");
+	}
+
+	ret = seccomp(SECCOMP_SET_MODE_FILTER, 0, &self->root_prog);
 	ASSERT_EQ(0, ret) {
 		TH_LOG("Kernel does not support SECCOMP_SET_MODE_FILTER!");
 	}
@@ -1550,9 +1560,76 @@ TEST_F(TSYNC, two_siblings_with_ancestor) {
 	EXPECT_EQ(0x0, (long)status);
 }
 
-TEST_F(TSYNC, two_siblings_with_one_divergence) {
-	long ret = seccomp(SECCOMP_SET_MODE_FILTER, 0, &self->root_prog);
+TEST_F(TSYNC, two_sibling_want_nnp) {
 	void *status;
+
+	/* start siblings before any prctl() operations */
+	tsync_start_sibling(&self->sibling[0]);
+	tsync_start_sibling(&self->sibling[1]);
+	while (self->sibling_count < TSYNC_SIBLINGS) {
+		sem_wait(&self->started);
+		self->sibling_count++;
+	}
+
+	/* Tell the siblings to test no policy */
+	pthread_mutex_lock(&self->mutex);
+	ASSERT_EQ(0, pthread_cond_broadcast(&self->cond)) {
+		TH_LOG("cond broadcast non-zero");
+	}
+	pthread_mutex_unlock(&self->mutex);
+
+	/* Ensure they are both upset about lacking nnp. */
+	pthread_join(self->sibling[0].tid, &status);
+	EXPECT_EQ(SIBLING_EXIT_NEWPRIVS, (long)status);
+	pthread_join(self->sibling[1].tid, &status);
+	EXPECT_EQ(SIBLING_EXIT_NEWPRIVS, (long)status);
+}
+
+TEST_F(TSYNC, two_siblings_with_no_filter) {
+	long ret;
+	void *status;
+
+	/* start siblings before any prctl() operations */
+	tsync_start_sibling(&self->sibling[0]);
+	tsync_start_sibling(&self->sibling[1]);
+	while (self->sibling_count < TSYNC_SIBLINGS) {
+		sem_wait(&self->started);
+		self->sibling_count++;
+	}
+
+	ASSERT_EQ(0, prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)) {
+		TH_LOG("Kernel does not support PR_SET_NO_NEW_PRIVS!");
+	}
+
+	ret = seccomp(SECCOMP_SET_MODE_FILTER, SECCOMP_FLAG_FILTER_TSYNC,
+		      &self->apply_prog);
+	ASSERT_EQ(0, ret) {
+		TH_LOG("Could install filter on all threads!");
+	}
+
+	/* Tell the siblings to test the policy */
+	pthread_mutex_lock(&self->mutex);
+	ASSERT_EQ(0, pthread_cond_broadcast(&self->cond)) {
+		TH_LOG("cond broadcast non-zero");
+	}
+	pthread_mutex_unlock(&self->mutex);
+
+	/* Ensure they are both killed and don't exit cleanly. */
+	pthread_join(self->sibling[0].tid, &status);
+	EXPECT_EQ(0x0, (long)status);
+	pthread_join(self->sibling[1].tid, &status);
+	EXPECT_EQ(0x0, (long)status);
+}
+
+TEST_F(TSYNC, two_siblings_with_one_divergence) {
+	long ret;
+	void *status;
+
+	ASSERT_EQ(0, prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)) {
+		TH_LOG("Kernel does not support PR_SET_NO_NEW_PRIVS!");
+	}
+
+	ret = seccomp(SECCOMP_SET_MODE_FILTER, 0, &self->root_prog);
 	ASSERT_EQ(0, ret) {
 		TH_LOG("Kernel does not support SECCOMP_SET_MODE_FILTER!");
 	}
@@ -1588,6 +1665,11 @@ TEST_F(TSYNC, two_siblings_with_one_divergence) {
 TEST_F(TSYNC, two_siblings_not_under_filter) {
 	long ret, sib;
 	void *status;
+
+	ASSERT_EQ(0, prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)) {
+		TH_LOG("Kernel does not support PR_SET_NO_NEW_PRIVS!");
+	}
+
 	/*
 	 * Sibling 0 will have its own seccomp policy
 	 * and Sibling 1 will not be under seccomp at
