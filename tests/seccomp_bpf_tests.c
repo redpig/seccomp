@@ -248,6 +248,29 @@ TEST(mode_filter_cannot_move_to_strict) {
 }
 
 
+TEST(mode_filter_get_seccomp) {
+	struct sock_filter filter[] = {
+		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
+	};
+	struct sock_fprog prog = {
+		.len = (unsigned short)(sizeof(filter)/sizeof(filter[0])),
+		.filter = filter,
+	};
+
+	long ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+	ASSERT_EQ(0, ret);
+
+	ret = prctl(PR_GET_SECCOMP, 0, 0, 0, 0);
+	EXPECT_EQ(0, ret);
+
+	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog, 0, 0);
+	ASSERT_EQ(0, ret);
+
+	ret = prctl(PR_GET_SECCOMP, 0, 0, 0, 0);
+	EXPECT_EQ(2, ret);
+}
+
+
 TEST(ALLOW_all) {
 	struct sock_filter filter[] = {
 		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
