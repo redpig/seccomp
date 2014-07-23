@@ -26,6 +26,8 @@
 #include <stdbool.h>
 #include <string.h>
 #include <syscall.h>
+#include <linux/elf.h>
+#include <sys/uio.h>
 
 #define _GNU_SOURCE
 #include <unistd.h>
@@ -1050,31 +1052,41 @@ TEST_F(TRACE_poke, getpid_runs_normally) {
 /* Architecture-specific syscall changing routines. */
 void change_syscall(struct __test_metadata *_metadata,
 		    pid_t tracee, int syscall) {
+	struct iovec iov;
 	int ret;
 #if defined(__x86_64__) || defined(__i386__)
 	struct user_regs_struct regs;
-#elif __arm__
+#elif defined(__arm__)
 	struct pt_regs regs;
+#elif defined(__aarch64__)
+	struct user_pt_regs regs;
 #else
 # error "What is the name of your architecture's CPU register set?"
 #endif
 
-	ret = ptrace(PTRACE_GETREGS, tracee, NULL, &regs);
+	iov.iov_base = &regs;
+	iov.iov_len = sizeof(regs);
+	ret = ptrace(PTRACE_GETREGSET, tracee, NT_PRSTATUS, &iov);
 	EXPECT_EQ(0, ret);
 
-#if defined(__x86_64__) || defined(__i386__)
-# ifdef __x86_64__
+#if defined(__x86_64__) || defined(__i386__) || defined(__aarch64__)
+# if defined(__x86_64__)
 #  define SYSCALL_REG orig_rax
 #  define SYSCALL_RET rax
-# else
+# elif defined(__i386__)
 #  define SYSCALL_REG orig_ax
 #  define SYSCALL_RET ax
+# elif defined(__aarch64__)
+#  define SYSCALL_REG regs[8]
+#  define SYSCALL_RET regs[0]
+# else
+#  error "Your compiler is very broken: the architecture went missing."
 # endif
 	{
 		regs.SYSCALL_REG = syscall;
 	}
 
-#elif __arm__
+#elif defined(__arm__)
 # define SYSCALL_RET ARM_r0
 # ifndef PTRACE_SET_SYSCALL
 #  define PTRACE_SET_SYSCALL   23
@@ -1094,7 +1106,7 @@ void change_syscall(struct __test_metadata *_metadata,
 	if (syscall == -1)
 		regs.SYSCALL_RET = 1;
 
-	ret = ptrace(PTRACE_SETREGS, tracee, NULL, &regs);
+	ret = ptrace(PTRACE_SETREGSET, tracee, NT_PRSTATUS, &iov);
 	EXPECT_EQ(0, ret);
 }
 
@@ -1226,6 +1238,8 @@ TEST_F(TRACE_syscall, syscall_dropped) {
 #  define __NR_seccomp 317
 # elif defined(__arm__)
 #  define __NR_seccomp 383
+# elif defined(__aarch64__)
+#  define __NR_seccomp 277
 # else
 #  warning "seccomp syscall number unknown for this architecture"
 #  define __NR_seccomp 0xffff
