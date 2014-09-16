@@ -15,4 +15,9 @@ resumption: resumption.c test_harness.h
 sigsegv: sigsegv.c test_harness.h
 	$(CC) $^ -o $@ $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) -ggdb3
 
-.PHONY: clean
+run_tests: $(EXEC)
+	./seccomp_bpf_tests
+	./resumption
+	./sigsegv
+
+.PHONY: clean run_tests

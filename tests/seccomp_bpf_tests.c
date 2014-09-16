@@ -26,6 +26,8 @@
 #include <stdbool.h>
 #include <string.h>
 #include <syscall.h>
+#include <linux/elf.h>
+#include <sys/uio.h>
 
 #define _GNU_SOURCE
 #include <unistd.h>
@@ -85,6 +87,7 @@ struct seccomp_data {
 
 #define SIBLING_EXIT_UNKILLED	0xbadbeef
 #define SIBLING_EXIT_FAILURE	0xbadface
+#define SIBLING_EXIT_NEWPRIVS	0xbadfeed
 
 TEST(mode_strict_support) {
 	long ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_STRICT, NULL, NULL, NULL);
@@ -245,6 +248,29 @@ TEST(mode_filter_cannot_move_to_strict) {
 	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_STRICT, NULL, 0, 0);
 	EXPECT_EQ(-1, ret);
 	EXPECT_EQ(EINVAL, errno);
+}
+
+
+TEST(mode_filter_get_seccomp) {
+	struct sock_filter filter[] = {
+		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
+	};
+	struct sock_fprog prog = {
+		.len = (unsigned short)(sizeof(filter)/sizeof(filter[0])),
+		.filter = filter,
+	};
+
+	long ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+	ASSERT_EQ(0, ret);
+
+	ret = prctl(PR_GET_SECCOMP, 0, 0, 0, 0);
+	EXPECT_EQ(0, ret);
+
+	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog, 0, 0);
+	ASSERT_EQ(0, ret);
+
+	ret = prctl(PR_GET_SECCOMP, 0, 0, 0, 0);
+	EXPECT_EQ(2, ret);
 }
 
 
@@ -1026,31 +1052,41 @@ TEST_F(TRACE_poke, getpid_runs_normally) {
 /* Architecture-specific syscall changing routines. */
 void change_syscall(struct __test_metadata *_metadata,
 		    pid_t tracee, int syscall) {
+	struct iovec iov;
 	int ret;
 #if defined(__x86_64__) || defined(__i386__)
 	struct user_regs_struct regs;
-#elif __arm__
+#elif defined(__arm__)
 	struct pt_regs regs;
+#elif defined(__aarch64__)
+	struct user_pt_regs regs;
 #else
 # error "What is the name of your architecture's CPU register set?"
 #endif
 
-	ret = ptrace(PTRACE_GETREGS, tracee, NULL, &regs);
+	iov.iov_base = &regs;
+	iov.iov_len = sizeof(regs);
+	ret = ptrace(PTRACE_GETREGSET, tracee, NT_PRSTATUS, &iov);
 	EXPECT_EQ(0, ret);
 
-#if defined(__x86_64__) || defined(__i386__)
-# ifdef __x86_64__
+#if defined(__x86_64__) || defined(__i386__) || defined(__aarch64__)
+# if defined(__x86_64__)
 #  define SYSCALL_REG orig_rax
 #  define SYSCALL_RET rax
-# else
+# elif defined(__i386__)
 #  define SYSCALL_REG orig_ax
 #  define SYSCALL_RET ax
+# elif defined(__aarch64__)
+#  define SYSCALL_REG regs[8]
+#  define SYSCALL_RET regs[0]
+# else
+#  error "Your compiler is very broken: the architecture went missing."
 # endif
 	{
 		regs.SYSCALL_REG = syscall;
 	}
 
-#elif __arm__
+#elif defined(__arm__)
 # define SYSCALL_RET ARM_r0
 # ifndef PTRACE_SET_SYSCALL
 #  define PTRACE_SET_SYSCALL   23
@@ -1070,7 +1106,7 @@ void change_syscall(struct __test_metadata *_metadata,
 	if (syscall == -1)
 		regs.SYSCALL_RET = 1;
 
-	ret = ptrace(PTRACE_SETREGS, tracee, NULL, &regs);
+	ret = ptrace(PTRACE_SETREGSET, tracee, NT_PRSTATUS, &iov);
 	EXPECT_EQ(0, ret);
 }
 
@@ -1200,7 +1236,12 @@ TEST_F(TRACE_syscall, syscall_dropped) {
 #  define __NR_seccomp 354
 # elif defined(__x86_64__)
 #  define __NR_seccomp 317
+# elif defined(__arm__)
+#  define __NR_seccomp 383
+# elif defined(__aarch64__)
+#  define __NR_seccomp 277
 # else
+#  warning "seccomp syscall number unknown for this architecture"
 #  define __NR_seccomp 0xffff
 # endif
 #endif
@@ -1301,6 +1342,26 @@ TEST(seccomp_syscall_mode_lock) {
 	}
 }
 
+TEST(TSYNC_first) {
+	struct sock_filter filter[] = {
+		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
+	};
+	struct sock_fprog prog = {
+		.len = (unsigned short)(sizeof(filter)/sizeof(filter[0])),
+		.filter = filter,
+	};
+	long ret = prctl(PR_SET_NO_NEW_PRIVS, 1, NULL, 0, 0);
+	ASSERT_EQ(0, ret) {
+		TH_LOG("Kernel does not support PR_SET_NO_NEW_PRIVS!");
+	}
+
+	ret = seccomp(SECCOMP_SET_MODE_FILTER, SECCOMP_FLAG_FILTER_TSYNC,
+		      &prog);
+	EXPECT_EQ(0, ret) {
+		TH_LOG("Could not install initial filter with TSYNC!");
+	}
+}
+
 #define TSYNC_SIBLINGS 2
 struct tsync_sibling {
 	pthread_t tid;
@@ -1367,10 +1428,6 @@ FIXTURE_SETUP(TSYNC) {
 	self->sibling[1].prog = &self->root_prog;
 	self->sibling[1].num_waits = 1;
 	self->sibling[1].metadata = _metadata;
-
-	ASSERT_EQ(0, prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)) {
-		TH_LOG("Kernel does not support PR_SET_NO_NEW_PRIVS!");
-	}
 }
 
 FIXTURE_TEARDOWN(TSYNC) {
@@ -1419,6 +1476,9 @@ void *tsync_sibling(void *data)
 	}
 	while (me->num_waits);
 	pthread_mutex_unlock(me->mutex);
+	long nnp = prctl(PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0);
+	if (!nnp)
+		return (void*)SIBLING_EXIT_NEWPRIVS;
 	read(0, NULL, 0);
 	return (void *)SIBLING_EXIT_UNKILLED;
 }
@@ -1442,6 +1502,10 @@ TEST_F(TSYNC, siblings_fail_prctl) {
 		.len = (unsigned short)(sizeof(filter)/sizeof(filter[0])),
 		.filter = filter,
 	};
+
+	ASSERT_EQ(0, prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)) {
+		TH_LOG("Kernel does not support PR_SET_NO_NEW_PRIVS!");
+	}
 
 	/* Check prctl failure detection by requesting sib 0 diverge. */
 	ret = seccomp(SECCOMP_SET_MODE_FILTER, 0, &prog);
@@ -1473,8 +1537,14 @@ TEST_F(TSYNC, siblings_fail_prctl) {
 }
 
 TEST_F(TSYNC, two_siblings_with_ancestor) {
-	long ret = seccomp(SECCOMP_SET_MODE_FILTER, 0, &self->root_prog);
+	long ret;
 	void *status;
+
+	ASSERT_EQ(0, prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)) {
+		TH_LOG("Kernel does not support PR_SET_NO_NEW_PRIVS!");
+	}
+
+	ret = seccomp(SECCOMP_SET_MODE_FILTER, 0, &self->root_prog);
 	ASSERT_EQ(0, ret) {
 		TH_LOG("Kernel does not support SECCOMP_SET_MODE_FILTER!");
 	}
@@ -1504,9 +1574,76 @@ TEST_F(TSYNC, two_siblings_with_ancestor) {
 	EXPECT_EQ(0x0, (long)status);
 }
 
-TEST_F(TSYNC, two_siblings_with_one_divergence) {
-	long ret = seccomp(SECCOMP_SET_MODE_FILTER, 0, &self->root_prog);
+TEST_F(TSYNC, two_sibling_want_nnp) {
 	void *status;
+
+	/* start siblings before any prctl() operations */
+	tsync_start_sibling(&self->sibling[0]);
+	tsync_start_sibling(&self->sibling[1]);
+	while (self->sibling_count < TSYNC_SIBLINGS) {
+		sem_wait(&self->started);
+		self->sibling_count++;
+	}
+
+	/* Tell the siblings to test no policy */
+	pthread_mutex_lock(&self->mutex);
+	ASSERT_EQ(0, pthread_cond_broadcast(&self->cond)) {
+		TH_LOG("cond broadcast non-zero");
+	}
+	pthread_mutex_unlock(&self->mutex);
+
+	/* Ensure they are both upset about lacking nnp. */
+	pthread_join(self->sibling[0].tid, &status);
+	EXPECT_EQ(SIBLING_EXIT_NEWPRIVS, (long)status);
+	pthread_join(self->sibling[1].tid, &status);
+	EXPECT_EQ(SIBLING_EXIT_NEWPRIVS, (long)status);
+}
+
+TEST_F(TSYNC, two_siblings_with_no_filter) {
+	long ret;
+	void *status;
+
+	/* start siblings before any prctl() operations */
+	tsync_start_sibling(&self->sibling[0]);
+	tsync_start_sibling(&self->sibling[1]);
+	while (self->sibling_count < TSYNC_SIBLINGS) {
+		sem_wait(&self->started);
+		self->sibling_count++;
+	}
+
+	ASSERT_EQ(0, prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)) {
+		TH_LOG("Kernel does not support PR_SET_NO_NEW_PRIVS!");
+	}
+
+	ret = seccomp(SECCOMP_SET_MODE_FILTER, SECCOMP_FLAG_FILTER_TSYNC,
+		      &self->apply_prog);
+	ASSERT_EQ(0, ret) {
+		TH_LOG("Could install filter on all threads!");
+	}
+
+	/* Tell the siblings to test the policy */
+	pthread_mutex_lock(&self->mutex);
+	ASSERT_EQ(0, pthread_cond_broadcast(&self->cond)) {
+		TH_LOG("cond broadcast non-zero");
+	}
+	pthread_mutex_unlock(&self->mutex);
+
+	/* Ensure they are both killed and don't exit cleanly. */
+	pthread_join(self->sibling[0].tid, &status);
+	EXPECT_EQ(0x0, (long)status);
+	pthread_join(self->sibling[1].tid, &status);
+	EXPECT_EQ(0x0, (long)status);
+}
+
+TEST_F(TSYNC, two_siblings_with_one_divergence) {
+	long ret;
+	void *status;
+
+	ASSERT_EQ(0, prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)) {
+		TH_LOG("Kernel does not support PR_SET_NO_NEW_PRIVS!");
+	}
+
+	ret = seccomp(SECCOMP_SET_MODE_FILTER, 0, &self->root_prog);
 	ASSERT_EQ(0, ret) {
 		TH_LOG("Kernel does not support SECCOMP_SET_MODE_FILTER!");
 	}
@@ -1542,6 +1679,11 @@ TEST_F(TSYNC, two_siblings_with_one_divergence) {
 TEST_F(TSYNC, two_siblings_not_under_filter) {
 	long ret, sib;
 	void *status;
+
+	ASSERT_EQ(0, prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)) {
+		TH_LOG("Kernel does not support PR_SET_NO_NEW_PRIVS!");
+	}
+
 	/*
 	 * Sibling 0 will have its own seccomp policy
 	 * and Sibling 1 will not be under seccomp at
