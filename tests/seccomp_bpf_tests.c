@@ -1074,8 +1074,8 @@ void change_syscall(struct __test_metadata *_metadata,
 #  define SYSCALL_REG orig_rax
 #  define SYSCALL_RET rax
 # elif defined(__i386__)
-#  define SYSCALL_REG orig_ax
-#  define SYSCALL_RET ax
+#  define SYSCALL_REG orig_eax
+#  define SYSCALL_RET eax
 # elif defined(__aarch64__)
 #  define SYSCALL_REG regs[8]
 #  define SYSCALL_RET regs[0]

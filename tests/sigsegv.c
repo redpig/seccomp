@@ -133,13 +133,14 @@ static void TRAP_action(int nr, siginfo_t *info, void *void_context)
 			(unsigned long)sys->_call_addr,
 			sys->_arch,
 			sys->_syscall,
-			ctx->uc_mcontext.gregs[REG_ARG0],
-			ctx->uc_mcontext.gregs[REG_ARG1],
-			ctx->uc_mcontext.gregs[REG_ARG2],
-			ctx->uc_mcontext.gregs[REG_ARG3],
-			ctx->uc_mcontext.gregs[REG_ARG4],
-			ctx->uc_mcontext.gregs[REG_ARG5],
-			ALIGN(ctx->uc_mcontext.gregs[REG_IP], 4096));
+			(unsigned long)ctx->uc_mcontext.gregs[REG_ARG0],
+			(unsigned long)ctx->uc_mcontext.gregs[REG_ARG1],
+			(unsigned long)ctx->uc_mcontext.gregs[REG_ARG2],
+			(unsigned long)ctx->uc_mcontext.gregs[REG_ARG3],
+			(unsigned long)ctx->uc_mcontext.gregs[REG_ARG4],
+			(unsigned long)ctx->uc_mcontext.gregs[REG_ARG5],
+			(unsigned long)ALIGN(ctx->uc_mcontext.gregs[REG_IP],
+			4096));
 	/* Emit some useful logs or whatever. */
 	syscall(__NR_write, STDOUT_FILENO, buf, len);
 	/* Make the calling page non-exec */
