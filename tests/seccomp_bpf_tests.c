@@ -1859,7 +1859,7 @@ TEST(syscall_restart) {
 		syscall(__NR_exit, _metadata->passed ? EXIT_SUCCESS
 						     : EXIT_FAILURE);
 	}
-	ASSERT_EQ(0, close(pipefd[0]));
+	EXPECT_EQ(0, close(pipefd[0]));
 
 	/* Attach to child, setup options, and release. */
 	ASSERT_EQ(child_pid, waitpid(child_pid, &status, 0));
@@ -1876,16 +1876,16 @@ TEST(syscall_restart) {
 	ASSERT_EQ(PTRACE_EVENT_SECCOMP, (status >> 16));
 	ASSERT_EQ(0, ptrace(PTRACE_GETEVENTMSG, child_pid, NULL, &msg));
 	ASSERT_EQ(0x100, msg);
-	ASSERT_EQ(__NR_poll, get_syscall(_metadata, child_pid));
+	EXPECT_EQ(__NR_poll, get_syscall(_metadata, child_pid));
 
 	/* Might as well check siginfo for sanity while we're here. */
 	ASSERT_EQ(0, ptrace(PTRACE_GETSIGINFO, child_pid, NULL, &info));
 	ASSERT_EQ(SIGTRAP, info.si_signo);
 	ASSERT_EQ(SIGTRAP | (PTRACE_EVENT_SECCOMP << 8), info.si_code);
-	ASSERT_EQ(0, info.si_errno);
-	ASSERT_EQ(getuid(), info.si_uid);
+	EXPECT_EQ(0, info.si_errno);
+	EXPECT_EQ(getuid(), info.si_uid);
 	/* Verify signal delivery came from child (seccomp-triggered). */
-	ASSERT_EQ(child_pid, info.si_pid);
+	EXPECT_EQ(child_pid, info.si_pid);
 
 	/* Interrupt poll with SIGSTOP (which we'll need to handle). */
 	ASSERT_EQ(0, kill(child_pid, SIGSTOP));
@@ -1895,7 +1895,7 @@ TEST(syscall_restart) {
 	ASSERT_EQ(SIGSTOP, WSTOPSIG(status));
 	/* Verify signal delivery came from parent now. */
 	ASSERT_EQ(0, ptrace(PTRACE_GETSIGINFO, child_pid, NULL, &info));
-	ASSERT_EQ(getpid(), info.si_pid);
+	EXPECT_EQ(getpid(), info.si_pid);
 
 	/* Restart poll with SIGCONT, which triggers restart_syscall. */
 	ASSERT_EQ(0, kill(child_pid, SIGCONT));
@@ -1912,12 +1912,18 @@ TEST(syscall_restart) {
 	ASSERT_EQ(PTRACE_EVENT_SECCOMP, (status >> 16));
 	ASSERT_EQ(0, ptrace(PTRACE_GETEVENTMSG, child_pid, NULL, &msg));
 	ASSERT_EQ(0x200, msg);
-	ASSERT_EQ(__NR_restart_syscall, get_syscall(_metadata, child_pid));
+	ret = get_syscall(_metadata, child_pid);
+#if defined(__arm__)
+	/* FIXME: ARM does not expose true syscall in registers. */
+	EXPECT_EQ(__NR_poll, ret);
+#else
+	EXPECT_EQ(__NR_restart_syscall, ret);
+#endif
 
 	/* Write again to end poll. */
 	ASSERT_EQ(0, ptrace(PTRACE_CONT, child_pid, NULL, 0));
 	ASSERT_EQ(1, write(pipefd[1], "!", 1));
-	ASSERT_EQ(0, close(pipefd[1]));
+	EXPECT_EQ(0, close(pipefd[1]));
 
 	ASSERT_EQ(child_pid, waitpid(child_pid, &status, 0));
 	if (WIFSIGNALED(status) || WEXITSTATUS(status))
