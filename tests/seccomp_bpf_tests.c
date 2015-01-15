@@ -1050,20 +1050,47 @@ TEST_F(TRACE_poke, getpid_runs_normally) {
 	EXPECT_EQ(0, self->poked);
 }
 
-/* Architecture-specific syscall changing routines. */
+#if defined(__x86_64__)
+# define ARCH_REGS	struct user_regs_struct
+# define SYSCALL_NUM	orig_rax
+# define SYSCALL_RET	rax
+#elif defined(__i386__)
+# define ARCH_REGS	struct user_regs_struct
+# define SYSCALL_NUM	orig_eax
+# define SYSCALL_RET	eax
+#elif defined(__arm__)
+# define ARCH_REGS	struct pt_regs
+# define SYSCALL_NUM	ARM_r7
+# define SYSCALL_RET	ARM_r0
+#elif defined(__aarch64__)
+# define ARCH_REGS	struct user_pt_regs
+# define SYSCALL_NUM	regs[8]
+# define SYSCALL_RET	regs[0]
+#else
+# error "Do not know how to your architecture's registers and syscalls"
+#endif
+
+/* Architecture-specific syscall fetching routine. */
+int get_syscall(struct __test_metadata *_metadata, pid_t tracee) {
+	struct iovec iov;
+	ARCH_REGS regs;
+
+	iov.iov_base = &regs;
+	iov.iov_len = sizeof(regs);
+	EXPECT_EQ(0, ptrace(PTRACE_GETREGSET, tracee, NT_PRSTATUS, &iov)) {
+		TH_LOG("PTRACE_GETREGSET failed");
+		return -1;
+	}
+
+	return regs.SYSCALL_NUM;
+}
+
+/* Architecture-specific syscall changing routine. */
 void change_syscall(struct __test_metadata *_metadata,
 		    pid_t tracee, int syscall) {
 	struct iovec iov;
 	int ret;
-#if defined(__x86_64__) || defined(__i386__)
-	struct user_regs_struct regs;
-#elif defined(__arm__)
-	struct pt_regs regs;
-#elif defined(__aarch64__)
-	struct user_pt_regs regs;
-#else
-# error "What is the name of your architecture's CPU register set?"
-#endif
+	ARCH_REGS regs;
 
 	iov.iov_base = &regs;
 	iov.iov_len = sizeof(regs);
@@ -1071,24 +1098,11 @@ void change_syscall(struct __test_metadata *_metadata,
 	EXPECT_EQ(0, ret);
 
 #if defined(__x86_64__) || defined(__i386__) || defined(__aarch64__)
-# if defined(__x86_64__)
-#  define SYSCALL_REG orig_rax
-#  define SYSCALL_RET rax
-# elif defined(__i386__)
-#  define SYSCALL_REG orig_eax
-#  define SYSCALL_RET eax
-# elif defined(__aarch64__)
-#  define SYSCALL_REG regs[8]
-#  define SYSCALL_RET regs[0]
-# else
-#  error "Your compiler is very broken: the architecture went missing."
-# endif
 	{
-		regs.SYSCALL_REG = syscall;
+		regs.SYSCALL_NUM = syscall;
 	}
 
 #elif defined(__arm__)
-# define SYSCALL_RET ARM_r0
 # ifndef PTRACE_SET_SYSCALL
 #  define PTRACE_SET_SYSCALL   23
 # endif
@@ -1862,6 +1876,7 @@ TEST(syscall_restart) {
 	ASSERT_EQ(PTRACE_EVENT_SECCOMP, (status >> 16));
 	ASSERT_EQ(0, ptrace(PTRACE_GETEVENTMSG, child_pid, NULL, &msg));
 	ASSERT_EQ(0x100, msg);
+	ASSERT_EQ(__NR_poll, get_syscall(_metadata, child_pid));
 
 	/* Might as well check siginfo for sanity while we're here. */
 	ASSERT_EQ(0, ptrace(PTRACE_GETSIGINFO, child_pid, NULL, &info));
@@ -1897,6 +1912,7 @@ TEST(syscall_restart) {
 	ASSERT_EQ(PTRACE_EVENT_SECCOMP, (status >> 16));
 	ASSERT_EQ(0, ptrace(PTRACE_GETEVENTMSG, child_pid, NULL, &msg));
 	ASSERT_EQ(0x200, msg);
+	ASSERT_EQ(__NR_restart_syscall, get_syscall(_metadata, child_pid));
 
 	/* Write again to end poll. */
 	ASSERT_EQ(0, ptrace(PTRACE_CONT, child_pid, NULL, 0));
