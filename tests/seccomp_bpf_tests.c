@@ -132,7 +132,7 @@ TEST(mode_filter_support) {
 
 TEST(mode_filter_without_nnp) {
 	struct sock_filter filter[] = {
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
 	};
 	struct sock_fprog prog = {
 		.len = (unsigned short)(sizeof(filter)/sizeof(filter[0])),
@@ -160,7 +160,7 @@ TEST(filter_size_limits) {
 	int i;
 	int count = BPF_MAXINSNS + 1;
 	struct sock_filter allow[] = {
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
 	};
 	struct sock_filter *filter;
 	struct sock_fprog prog = { };
@@ -196,7 +196,7 @@ TEST(filter_chain_limits) {
 	int i;
 	int count = BPF_MAXINSNS;
 	struct sock_filter allow[] = {
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
 	};
 	struct sock_filter *filter;
 	struct sock_fprog prog = { };
@@ -233,7 +233,7 @@ TEST(filter_chain_limits) {
 
 TEST(mode_filter_cannot_move_to_strict) {
 	struct sock_filter filter[] = {
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
 	};
 	struct sock_fprog prog = {
 		.len = (unsigned short)(sizeof(filter)/sizeof(filter[0])),
@@ -254,7 +254,7 @@ TEST(mode_filter_cannot_move_to_strict) {
 
 TEST(mode_filter_get_seccomp) {
 	struct sock_filter filter[] = {
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
 	};
 	struct sock_fprog prog = {
 		.len = (unsigned short)(sizeof(filter)/sizeof(filter[0])),
@@ -277,7 +277,7 @@ TEST(mode_filter_get_seccomp) {
 
 TEST(ALLOW_all) {
 	struct sock_filter filter[] = {
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
 	};
 	struct sock_fprog prog = {
 		.len = (unsigned short)(sizeof(filter)/sizeof(filter[0])),
@@ -309,7 +309,7 @@ TEST(empty_prog) {
 
 TEST_SIGNAL(unknown_ret_is_kill_inside, SIGSYS) {
 	struct sock_filter filter[] = {
-		BPF_STMT(BPF_RET+BPF_K, 0x10000000U),
+		BPF_STMT(BPF_RET|BPF_K, 0x10000000U),
 	};
 	struct sock_fprog prog = {
 		.len = (unsigned short)(sizeof(filter)/sizeof(filter[0])),
@@ -329,7 +329,7 @@ TEST_SIGNAL(unknown_ret_is_kill_inside, SIGSYS) {
 /* return code >= 0x80000000 is unused. */
 TEST_SIGNAL(unknown_ret_is_kill_above_allow, SIGSYS) {
 	struct sock_filter filter[] = {
-		BPF_STMT(BPF_RET+BPF_K, 0x90000000U),
+		BPF_STMT(BPF_RET|BPF_K, 0x90000000U),
 	};
 	struct sock_fprog prog = {
 		.len = (unsigned short)(sizeof(filter)/sizeof(filter[0])),
@@ -348,7 +348,7 @@ TEST_SIGNAL(unknown_ret_is_kill_above_allow, SIGSYS) {
 
 TEST_SIGNAL(KILL_all, SIGSYS) {
 	struct sock_filter filter[] = {
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_KILL),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_KILL),
 	};
 	struct sock_fprog prog = {
 		.len = (unsigned short)(sizeof(filter)/sizeof(filter[0])),
@@ -364,11 +364,11 @@ TEST_SIGNAL(KILL_all, SIGSYS) {
 
 TEST_SIGNAL(KILL_one, SIGSYS) {
 	struct sock_filter filter[] = {
-		BPF_STMT(BPF_LD+BPF_W+BPF_ABS,
+		BPF_STMT(BPF_LD|BPF_W|BPF_ABS,
 			offsetof(struct seccomp_data, nr)),
-		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_getpid, 0, 1),
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_KILL),
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
+		BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, __NR_getpid, 0, 1),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_KILL),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
 	};
 	struct sock_fprog prog = {
 		.len = (unsigned short)(sizeof(filter)/sizeof(filter[0])),
@@ -388,15 +388,15 @@ TEST_SIGNAL(KILL_one, SIGSYS) {
 
 TEST_SIGNAL(KILL_one_arg_one, SIGSYS) {
 	struct sock_filter filter[] = {
-		BPF_STMT(BPF_LD+BPF_W+BPF_ABS,
+		BPF_STMT(BPF_LD|BPF_W|BPF_ABS,
 			offsetof(struct seccomp_data, nr)),
-		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_getpid, 1, 0),
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
+		BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, __NR_getpid, 1, 0),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
 		/* Only both with lower 32-bit for now. */
-		BPF_STMT(BPF_LD+BPF_W+BPF_ABS, syscall_arg(0)),
-		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, 0x0C0FFEE, 0, 1),
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_KILL),
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
+		BPF_STMT(BPF_LD|BPF_W|BPF_ABS, syscall_arg(0)),
+		BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, 0x0C0FFEE, 0, 1),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_KILL),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
 	};
 	struct sock_fprog prog = {
 		.len = (unsigned short)(sizeof(filter)/sizeof(filter[0])),
@@ -418,15 +418,15 @@ TEST_SIGNAL(KILL_one_arg_one, SIGSYS) {
 
 TEST_SIGNAL(KILL_one_arg_six, SIGSYS) {
 	struct sock_filter filter[] = {
-		BPF_STMT(BPF_LD+BPF_W+BPF_ABS,
+		BPF_STMT(BPF_LD|BPF_W|BPF_ABS,
 			offsetof(struct seccomp_data, nr)),
-		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_getpid, 1, 0),
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
+		BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, __NR_getpid, 1, 0),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
 		/* Only both with lower 32-bit for now. */
-		BPF_STMT(BPF_LD+BPF_W+BPF_ABS, syscall_arg(5)),
-		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, 0x0C0FFEE, 0, 1),
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_KILL),
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
+		BPF_STMT(BPF_LD|BPF_W|BPF_ABS, syscall_arg(5)),
+		BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, 0x0C0FFEE, 0, 1),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_KILL),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
 	};
 	struct sock_fprog prog = {
 		.len = (unsigned short)(sizeof(filter)/sizeof(filter[0])),
@@ -450,8 +450,8 @@ TEST_SIGNAL(KILL_one_arg_six, SIGSYS) {
 
 TEST(arg_out_of_range) {
 	struct sock_filter filter[] = {
-		BPF_STMT(BPF_LD+BPF_W+BPF_ABS, syscall_arg(6)),
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
+		BPF_STMT(BPF_LD|BPF_W|BPF_ABS, syscall_arg(6)),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
 	};
 	struct sock_fprog prog = {
 		.len = (unsigned short)(sizeof(filter)/sizeof(filter[0])),
@@ -467,11 +467,11 @@ TEST(arg_out_of_range) {
 
 TEST(ERRNO_one) {
 	struct sock_filter filter[] = {
-		BPF_STMT(BPF_LD+BPF_W+BPF_ABS,
+		BPF_STMT(BPF_LD|BPF_W|BPF_ABS,
 			offsetof(struct seccomp_data, nr)),
-		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_read, 0, 1),
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ERRNO | E2BIG),
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
+		BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, __NR_read, 0, 1),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ERRNO | E2BIG),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
 	};
 	struct sock_fprog prog = {
 		.len = (unsigned short)(sizeof(filter)/sizeof(filter[0])),
@@ -491,11 +491,11 @@ TEST(ERRNO_one) {
 
 TEST(ERRNO_one_ok) {
 	struct sock_filter filter[] = {
-		BPF_STMT(BPF_LD+BPF_W+BPF_ABS,
+		BPF_STMT(BPF_LD|BPF_W|BPF_ABS,
 			offsetof(struct seccomp_data, nr)),
-		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_read, 0, 1),
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ERRNO | 0),
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
+		BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, __NR_read, 0, 1),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ERRNO | 0),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
 	};
 	struct sock_fprog prog = {
 		.len = (unsigned short)(sizeof(filter)/sizeof(filter[0])),
@@ -519,11 +519,11 @@ FIXTURE_DATA(TRAP) {
 
 FIXTURE_SETUP(TRAP) {
 	struct sock_filter filter[] = {
-		BPF_STMT(BPF_LD+BPF_W+BPF_ABS,
+		BPF_STMT(BPF_LD|BPF_W|BPF_ABS,
 			offsetof(struct seccomp_data, nr)),
-		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_getpid, 0, 1),
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_TRAP),
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
+		BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, __NR_getpid, 0, 1),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_TRAP),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
 	};
 	memset(&self->prog, 0, sizeof(self->prog));
 	self->prog.filter = malloc(sizeof(filter));
@@ -624,35 +624,35 @@ FIXTURE_DATA(precedence) {
 
 FIXTURE_SETUP(precedence) {
 	struct sock_filter allow_insns[] = {
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
 	};
 	struct sock_filter trace_insns[] = {
-		BPF_STMT(BPF_LD+BPF_W+BPF_ABS,
+		BPF_STMT(BPF_LD|BPF_W|BPF_ABS,
 			offsetof(struct seccomp_data, nr)),
-		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_getpid, 1, 0),
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_TRACE),
+		BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, __NR_getpid, 1, 0),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_TRACE),
 	};
 	struct sock_filter error_insns[] = {
-		BPF_STMT(BPF_LD+BPF_W+BPF_ABS,
+		BPF_STMT(BPF_LD|BPF_W|BPF_ABS,
 			offsetof(struct seccomp_data, nr)),
-		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_getpid, 1, 0),
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ERRNO),
+		BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, __NR_getpid, 1, 0),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ERRNO),
 	};
 	struct sock_filter trap_insns[] = {
-		BPF_STMT(BPF_LD+BPF_W+BPF_ABS,
+		BPF_STMT(BPF_LD|BPF_W|BPF_ABS,
 			offsetof(struct seccomp_data, nr)),
-		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_getpid, 1, 0),
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_TRAP),
+		BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, __NR_getpid, 1, 0),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_TRAP),
 	};
 	struct sock_filter kill_insns[] = {
-		BPF_STMT(BPF_LD+BPF_W+BPF_ABS,
+		BPF_STMT(BPF_LD|BPF_W|BPF_ABS,
 			offsetof(struct seccomp_data, nr)),
-		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_getpid, 1, 0),
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_KILL),
+		BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, __NR_getpid, 1, 0),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_KILL),
 	};
 	memset(self, 0, sizeof(*self));
 #define FILTER_ALLOC(_x) \
@@ -997,11 +997,11 @@ FIXTURE_DATA(TRACE_poke) {
 
 FIXTURE_SETUP(TRACE_poke) {
 	struct sock_filter filter[] = {
-		BPF_STMT(BPF_LD+BPF_W+BPF_ABS,
+		BPF_STMT(BPF_LD|BPF_W|BPF_ABS,
 			offsetof(struct seccomp_data, nr)),
-		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_read, 0, 1),
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_TRACE | 0x1001),
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
+		BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, __NR_read, 0, 1),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_TRACE | 0x1001),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
 	};
 
 	self->poked = 0;
@@ -1162,15 +1162,15 @@ FIXTURE_DATA(TRACE_syscall) {
 
 FIXTURE_SETUP(TRACE_syscall) {
 	struct sock_filter filter[] = {
-		BPF_STMT(BPF_LD+BPF_W+BPF_ABS,
+		BPF_STMT(BPF_LD|BPF_W|BPF_ABS,
 			offsetof(struct seccomp_data, nr)),
-		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_getpid, 0, 1),
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_TRACE | 0x1002),
-		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_gettid, 0, 1),
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_TRACE | 0x1003),
-		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_getppid, 0, 1),
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_TRACE | 0x1004),
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
+		BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, __NR_getpid, 0, 1),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_TRACE | 0x1002),
+		BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, __NR_gettid, 0, 1),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_TRACE | 0x1003),
+		BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, __NR_getppid, 0, 1),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_TRACE | 0x1004),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
 	};
 
 	memset(&self->prog, 0, sizeof(self->prog));
@@ -1283,7 +1283,7 @@ int seccomp(unsigned int op, unsigned int flags, struct sock_fprog *filter)
 
 TEST(seccomp_syscall) {
 	struct sock_filter filter[] = {
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
 	};
 	struct sock_fprog prog = {
 		.len = (unsigned short)(sizeof(filter)/sizeof(filter[0])),
@@ -1329,7 +1329,7 @@ TEST(seccomp_syscall) {
 
 TEST(seccomp_syscall_mode_lock) {
 	struct sock_filter filter[] = {
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
 	};
 	struct sock_fprog prog = {
 		.len = (unsigned short)(sizeof(filter)/sizeof(filter[0])),
@@ -1359,7 +1359,7 @@ TEST(seccomp_syscall_mode_lock) {
 
 TEST(TSYNC_first) {
 	struct sock_filter filter[] = {
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
 	};
 	struct sock_fprog prog = {
 		.len = (unsigned short)(sizeof(filter)/sizeof(filter[0])),
@@ -1401,14 +1401,14 @@ FIXTURE_DATA(TSYNC) {
 
 FIXTURE_SETUP(TSYNC) {
 	struct sock_filter root_filter[] = {
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
 	};
 	struct sock_filter apply_filter[] = {
-		BPF_STMT(BPF_LD+BPF_W+BPF_ABS,
+		BPF_STMT(BPF_LD|BPF_W|BPF_ABS,
 			offsetof(struct seccomp_data, nr)),
-		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_read, 0, 1),
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_KILL),
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
+		BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, __NR_read, 0, 1),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_KILL),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
 	};
 	memset(&self->root_prog, 0, sizeof(self->root_prog));
 	memset(&self->apply_prog, 0, sizeof(self->apply_prog));
@@ -1507,11 +1507,11 @@ TEST_F(TSYNC, siblings_fail_prctl) {
 	long ret;
 	void *status;
 	struct sock_filter filter[] = {
-		BPF_STMT(BPF_LD+BPF_W+BPF_ABS,
+		BPF_STMT(BPF_LD|BPF_W|BPF_ABS,
 			offsetof(struct seccomp_data, nr)),
-		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_prctl, 0, 1),
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ERRNO | EINVAL),
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
+		BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, __NR_prctl, 0, 1),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ERRNO | EINVAL),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
 	};
 	struct sock_fprog prog = {
 		.len = (unsigned short)(sizeof(filter)/sizeof(filter[0])),
@@ -1783,24 +1783,24 @@ TEST(syscall_restart) {
 	int status;
 	siginfo_t info = { };
 	struct sock_filter filter[] = {
-		BPF_STMT(BPF_LD+BPF_W+BPF_ABS,
+		BPF_STMT(BPF_LD|BPF_W|BPF_ABS,
 			 offsetof(struct seccomp_data, nr)),
 
 #ifdef __NR_sigreturn
-		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_sigreturn, 6, 0),
+		BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, __NR_sigreturn, 6, 0),
 #endif
-		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_read, 5, 0),
-		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_exit, 4, 0),
-		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_rt_sigreturn, 3, 0),
-		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_poll, 4, 0),
-		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_restart_syscall, 4, 0),
+		BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, __NR_read, 5, 0),
+		BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, __NR_exit, 4, 0),
+		BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, __NR_rt_sigreturn, 3, 0),
+		BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, __NR_poll, 4, 0),
+		BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, __NR_restart_syscall, 4, 0),
 
 		/* Allow __NR_write for easy logging. */
-		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_write, 0, 1),
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_KILL),
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_TRACE|0x100), /* poll */
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_TRACE|0x200), /* restart */
+		BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, __NR_write, 0, 1),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_KILL),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_TRACE|0x100), /* poll */
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_TRACE|0x200), /* restart */
 	};
 	struct sock_fprog prog = {
 		.len = (unsigned short)(sizeof(filter)/sizeof(filter[0])),
