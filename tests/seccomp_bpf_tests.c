@@ -1067,7 +1067,7 @@ TEST_F(TRACE_poke, getpid_runs_normally) {
 # define SYSCALL_NUM	regs[8]
 # define SYSCALL_RET	regs[0]
 #else
-# error "Do not know how to your architecture's registers and syscalls"
+# error "Do not know how to find your architecture's registers and syscalls"
 #endif
 
 /* Architecture-specific syscall fetching routine. */
