@@ -26,7 +26,6 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include <string.h>
-#include <syscall.h>
 #include <linux/elf.h>
 #include <sys/uio.h>
 
