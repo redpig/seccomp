@@ -464,7 +464,7 @@ TEST(arg_out_of_range) {
 	EXPECT_EQ(EINVAL, errno);
 }
 
-TEST(ERRNO_one) {
+TEST(ERRNO_valid) {
 	struct sock_filter filter[] = {
 		BPF_STMT(BPF_LD|BPF_W|BPF_ABS,
 			offsetof(struct seccomp_data, nr)),
@@ -488,7 +488,7 @@ TEST(ERRNO_one) {
 	EXPECT_EQ(E2BIG, errno);
 }
 
-TEST(ERRNO_one_ok) {
+TEST(ERRNO_zero) {
 	struct sock_filter filter[] = {
 		BPF_STMT(BPF_LD|BPF_W|BPF_ABS,
 			offsetof(struct seccomp_data, nr)),
@@ -510,6 +510,30 @@ TEST(ERRNO_one_ok) {
 	EXPECT_EQ(parent, syscall(__NR_getppid));
 	/* "errno" of 0 is ok. */
 	EXPECT_EQ(0, read(0, NULL, 0));
+}
+
+TEST(ERRNO_capped) {
+	struct sock_filter filter[] = {
+		BPF_STMT(BPF_LD|BPF_W|BPF_ABS,
+			offsetof(struct seccomp_data, nr)),
+		BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, __NR_read, 0, 1),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ERRNO | 4096),
+		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
+	};
+	struct sock_fprog prog = {
+		.len = (unsigned short)(sizeof(filter)/sizeof(filter[0])),
+		.filter = filter,
+	};
+	long ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+	pid_t parent = getppid();
+	ASSERT_EQ(0, ret);
+
+	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog);
+	ASSERT_EQ(0, ret);
+
+	EXPECT_EQ(parent, syscall(__NR_getppid));
+	EXPECT_EQ(-1, read(0, NULL, 0));
+	EXPECT_EQ(4095, errno);
 }
 
 FIXTURE_DATA(TRAP) {
