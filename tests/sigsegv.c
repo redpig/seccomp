@@ -1,7 +1,7 @@
 /* sigsegv.c
  * Copyright (c) 2012 The Chromium OS Authors. All rights reserved.
- * Use of this source code is governed by a BSD-style license that can be
- * found in the LICENSE file.
+ * Use of this source code is governed by a BSD-style or GPLv2 license
+ * that can be found in the LICENSE file.
  *
  * Forces a denied system call to trigger a SIGSEGV at the instruction after
  * the call using a SIGSYS handler.. This can be useful when debugging
