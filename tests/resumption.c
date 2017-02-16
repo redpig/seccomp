@@ -67,13 +67,8 @@ static void syscall_thunk(void)
 	asm("syscall; thunk_ip:");
 }
 
-static time_t vsyscall_time(time_t *p)
-{
-	register time_t t asm ("rax");
-	__attribute__((unused)) register time_t *p1 asm ("rdi") = p;
-	__asm__("call 0xffffffffff600400 \n");
-	return t;
-}
+typedef time_t (*vsys_time_t)(time_t *);
+static const vsys_time_t vsyscall_time = (vsys_time_t)0xffffffffff600400;
 
 
 #if 0
